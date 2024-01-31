@@ -1,0 +1,13 @@
+[package]
+name = "sbox"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Asynchronous SQLite client"
+repository = "https://github.com/udovin/sbox-rs"
+keywords = ["sandbox", "linux"]
+categories = ["virtualization"]
+
+[dependencies]
+clone3 = "0.2.3"
+nix = { version = "0.27.1", features = ["signal", "user"] }
