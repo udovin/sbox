@@ -10,4 +10,4 @@ categories = ["virtualization"]
 
 [dependencies]
 clone3 = "0.2.3"
-nix = { version = "0.27.1", features = ["signal", "user"] }
+nix = { version = "0.27.1", features = ["signal", "user", "hostname", "fs", "mount"] }

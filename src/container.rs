@@ -1,4 +1,5 @@
-use std::fs::{remove_dir, remove_dir_all};
+use std::fs::{remove_dir, remove_dir_all, File};
+use std::io::Write;
 use std::path::PathBuf;
 
 use super::{Error, Process, ProcessConfig};
@@ -39,23 +40,28 @@ impl Container {
     }
 
     /// Kills all processes inside container.
-    pub fn kill_all(&self) -> Result<(), Error> {
-        todo!()
+    pub fn kill(&self) -> Result<(), Error> {
+        let mut file = File::options()
+            .write(true)
+            .open(self.cgroup_path.join("cgroup.kill"))?;
+        file.write("1".as_bytes())?;
+        drop(file);
+        Ok(())
     }
 
     /// Releases all associated resources with container.
     pub fn destroy(self) -> Result<(), Error> {
-        let _ = self.kill_all();
-        let state_err = remove_dir_all(&self.state_path);
+        let kill_err = self.kill();
+        let state_err = self.remove_state();
         let cgroup_err = remove_dir(&self.cgroup_path);
+        kill_err?;
         state_err?;
         Ok(cgroup_err?)
     }
-}
 
-impl Drop for Container {
-    fn drop(&mut self) {
-        let _ = remove_dir_all(&self.state_path);
-        let _ = remove_dir(&self.cgroup_path);
+    fn remove_state(&self) -> Result<(), Error> {
+        remove_dir(&self.state_path.join("work/work"))?;
+        remove_dir(&self.state_path.join("work"))?;
+        Ok(remove_dir_all(&self.state_path)?)
     }
 }
