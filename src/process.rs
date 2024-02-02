@@ -1,15 +1,17 @@
 use std::ffi::CString;
-use std::fs::File;
+use std::fs::{create_dir, File};
 use std::io::{ErrorKind, Read, Write};
-use std::os::fd::{FromRawFd, RawFd};
+use std::os::fd::RawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use nix::mount::{mount, umount2, MntFlags, MsFlags};
+use nix::mount::{mount, MsFlags};
+use nix::sys::signal::kill;
+use nix::sys::wait::{waitpid, WaitPidFlag};
+use nix::unistd::{chdir, execvpe, setgid, sethostname, setuid, Gid, Pid, Uid};
 
-use super::{Container, Error, IdMap};
+use crate::{clone3, new_pipe, pivot_root, Clone, CloneArgs, Container, Error};
 
-pub type Pid = nix::unistd::Pid;
 pub type Signal = nix::sys::signal::Signal;
 pub type WaitStatus = nix::sys::wait::WaitStatus;
 
@@ -20,8 +22,8 @@ pub struct ProcessConfig {
     pub stdin: Option<RawFd>,
     pub stdout: Option<RawFd>,
     pub stderr: Option<RawFd>,
-    pub uid: u32,
-    pub gid: u32,
+    pub uid: Uid,
+    pub gid: Gid,
 }
 
 impl Default for ProcessConfig {
@@ -33,98 +35,92 @@ impl Default for ProcessConfig {
             stdin: None,
             stdout: None,
             stderr: None,
-            uid: 0,
-            gid: 0,
+            uid: Uid::from_raw(0),
+            gid: Gid::from_raw(0),
         }
     }
 }
 
 pub struct Process {
-    pub(super) pid: Option<Pid>,
+    pub(super) pid: Pid,
     pub(super) config: ProcessConfig,
 }
 
 impl Process {
-    pub fn pid(&self) -> Option<Pid> {
+    pub fn pid(&self) -> Pid {
         self.pid
     }
 
     pub fn signal(&self, signal: Signal) -> Result<(), Error> {
-        let pid = self.pid.ok_or("process not running")?;
-        Ok(nix::sys::signal::kill(pid, signal)?)
+        Ok(kill(self.pid, signal)?)
     }
 
     pub fn wait(&self) -> Result<WaitStatus, Error> {
-        let pid = self.pid.ok_or("process not running")?;
-        let flags = nix::sys::wait::WaitPidFlag::__WALL;
-        Ok(nix::sys::wait::waitpid(pid, Some(flags))?)
+        let flags = WaitPidFlag::__WALL;
+        Ok(waitpid(self.pid, Some(flags))?)
     }
 
-    pub(super) fn init_container(&mut self, container: &Container) -> Result<(), Error> {
-        std::fs::create_dir(container.state_path.join("rootfs"))?;
-        std::fs::create_dir(container.state_path.join("diff"))?;
-        std::fs::create_dir(container.state_path.join("work"))?;
-        let cgroup = std::fs::File::options()
+    pub(super) fn run_init(container: &Container, config: ProcessConfig) -> Result<Process, Error> {
+        create_dir(container.state_path.join("rootfs"))?;
+        create_dir(container.state_path.join("diff"))?;
+        create_dir(container.state_path.join("work"))?;
+        let cgroup = File::options()
             .read(true)
             .custom_flags(nix::libc::O_PATH | nix::libc::O_DIRECTORY)
             .open(&container.cgroup_path)?;
-        let (parent_rx, parent_tx) = nix::unistd::pipe()?;
-        let parent_rx = unsafe { File::from_raw_fd(parent_rx) };
-        let parent_tx = unsafe { File::from_raw_fd(parent_tx) };
-        let (child_rx, child_tx) = nix::unistd::pipe()?;
-        let child_rx = unsafe { File::from_raw_fd(child_rx) };
-        let child_tx = unsafe { File::from_raw_fd(child_tx) };
-        let mut clone = clone3::Clone3::default();
-        clone.flag_newuser();
-        clone.flag_newns();
-        clone.flag_newpid();
-        clone.flag_newnet();
-        clone.flag_newipc();
-        clone.flag_newuts();
-        clone.flag_newtime();
-        clone.flag_newcgroup();
-        clone.flag_into_cgroup(&cgroup);
-        let pid = match unsafe { clone.call() }? {
-            0 => {
+        let (parent_rx, parent_tx) = new_pipe()?;
+        let (child_rx, child_tx) = new_pipe()?;
+        let mut cl_args = CloneArgs::default();
+        cl_args.flag_newuser();
+        cl_args.flag_newns();
+        cl_args.flag_newpid();
+        cl_args.flag_newnet();
+        cl_args.flag_newipc();
+        cl_args.flag_newuts();
+        cl_args.flag_newtime();
+        cl_args.flag_newcgroup();
+        cl_args.flag_into_cgroup(&cgroup);
+        match unsafe { clone3(&cl_args) }? {
+            Clone::Child => {
                 drop(cgroup);
                 drop(parent_tx);
                 drop(child_rx);
-                self.start_child(parent_rx, child_tx, container)?;
+                let process = Self {
+                    pid: Pid::from_raw(0),
+                    config,
+                };
+                process.start_child(parent_rx, child_tx, container)?;
                 unreachable!()
             }
-            v => v,
-        };
-        drop(cgroup);
-        drop(parent_rx);
-        drop(child_tx);
-        self.start_parent(child_rx, parent_tx, Pid::from_raw(pid), container)
+            Clone::Parent(pid) => {
+                drop(cgroup);
+                drop(parent_rx);
+                drop(child_tx);
+                let process = Self { pid, config };
+                process.start_parent(child_rx, parent_tx, pid, container)?;
+                Ok(process)
+            }
+        }
     }
 
     fn start_parent(
-        &mut self,
+        &self,
         mut rx: File,
         mut tx: File,
         pid: Pid,
         container: &Container,
     ) -> Result<(), Error> {
-        Self::setup_user_namespace(pid, container)?;
+        container.setup_user_namespace(pid)?;
         // Unlock child process.
         tx.write(&[0])?;
         drop(tx);
         // Await child process is started.
         rx.read_exact(&mut [0; 1])?;
         drop(rx);
-        // Save child PID.
-        self.pid = Some(pid);
         Ok(())
     }
 
-    fn start_child(
-        &mut self,
-        mut rx: File,
-        mut tx: File,
-        container: &Container,
-    ) -> Result<(), Error> {
+    fn start_child(&self, mut rx: File, mut tx: File, container: &Container) -> Result<(), Error> {
         // Await parent process is initialized pid.
         rx.read_exact(&mut [0; 1])?;
         drop(rx);
@@ -132,7 +128,10 @@ impl Process {
         Self::setup_mount_namespace(container)?;
         Self::setup_uts_namespace(container)?;
         // Setup workdir.
-        nix::unistd::chdir(&self.config.work_dir)?;
+        chdir(&self.config.work_dir)?;
+        // Setup user.
+        setuid(self.config.uid)?;
+        setgid(self.config.gid)?;
         // Prepare exec arguments.
         let filename = CString::new(self.config.command[0].as_bytes())?;
         let argv: Vec<_> = self
@@ -151,18 +150,8 @@ impl Process {
         tx.write(&[0])?;
         drop(tx);
         // Run process.
-        nix::unistd::execvpe(&filename, &argv, &envp)?;
+        execvpe(&filename, &argv, &envp)?;
         unreachable!()
-    }
-
-    pub(super) fn execute(&mut self, container: &Container) -> Result<(), Error> {
-        todo!()
-    }
-
-    fn setup_user_namespace(pid: Pid, container: &Container) -> Result<(), Error> {
-        Self::run_newidmap(pid, "/bin/newuidmap", &container.config.uid_map)?;
-        Self::run_newidmap(pid, "/bin/newgidmap", &container.config.gid_map)?;
-        Ok(())
     }
 
     pub(super) fn setup_mount_namespace(container: &Container) -> Result<(), Error> {
@@ -255,12 +244,12 @@ impl Process {
             None,
         )?;
         // Pivot root.
-        Self::pivot_root(&rootfs)?;
+        pivot_root(&rootfs)?;
         Ok(())
     }
 
     fn setup_uts_namespace(container: &Container) -> Result<(), Error> {
-        Ok(nix::unistd::sethostname("sbox")?)
+        Ok(sethostname(&container.config.hostname)?)
     }
 
     fn setup_overlayfs(
@@ -285,7 +274,7 @@ impl Process {
             "overlay".into(),
             rootfs,
             "overlay".into(),
-            nix::mount::MsFlags::empty(),
+            MsFlags::empty(),
             Some(mount_data.as_str()),
         )?)
     }
@@ -299,53 +288,11 @@ impl Process {
         data: Option<&str>,
     ) -> Result<(), Error> {
         let target = rootfs.join(target.trim_start_matches('/'));
-        if let Err(err) = std::fs::create_dir(&target) {
+        if let Err(err) = create_dir(&target) {
             if err.kind() != ErrorKind::AlreadyExists {
                 return Err(err.into());
             }
         }
         Ok(mount(source.into(), &target, fstype.into(), flags, data)?)
-    }
-
-    fn pivot_root(path: &Path) -> Result<(), Error> {
-        let new_root = nix::fcntl::open(
-            path,
-            nix::fcntl::OFlag::O_DIRECTORY | nix::fcntl::OFlag::O_RDONLY,
-            nix::sys::stat::Mode::empty(),
-        )?;
-        // Changes root to new path and stacks original root on the same path.
-        nix::unistd::pivot_root(path, path)?;
-        // Make the original root directory rslave to avoid propagating unmount event.
-        mount(
-            None::<&str>,
-            "/",
-            None::<&str>,
-            MsFlags::MS_SLAVE | MsFlags::MS_REC,
-            None::<&str>,
-        )?;
-        // Unmount the original root directory which was stacked on top of new root directory.
-        umount2("/", MntFlags::MNT_DETACH)?;
-        Ok(nix::unistd::fchdir(new_root)?)
-    }
-
-    fn run_newidmap(pid: Pid, binary: &str, id_map: &[IdMap]) -> Result<(), Error> {
-        let mut cmd = std::process::Command::new(binary);
-        cmd.arg(pid.as_raw().to_string());
-        for v in id_map {
-            cmd.arg(v.container_id.to_string())
-                .arg(v.host_id.to_string())
-                .arg(v.size.to_string());
-        }
-        let mut child = cmd.spawn()?;
-        let status = child.wait()?;
-        if !status.success() {
-            return Err(format!(
-                "{} exited with status: {}",
-                binary,
-                status.code().unwrap_or(0)
-            )
-            .into());
-        }
-        Ok(())
     }
 }

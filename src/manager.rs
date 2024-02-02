@@ -2,13 +2,34 @@ use std::fs::{create_dir, create_dir_all, remove_dir};
 use std::io::ErrorKind;
 use std::path::PathBuf;
 
-use super::{Container, ContainerConfig};
+use nix::unistd::{getgid, getuid};
+
+use crate::{Container, ContainerConfig, Gid, Uid};
 
 pub type Error = Box<dyn std::error::Error>;
+
+#[derive(Debug, Clone)]
+pub struct IdMap<T> {
+    pub container_id: T,
+    pub host_id: T,
+    pub size: u32,
+}
+
+impl<T: From<nix::libc::uid_t>> IdMap<T> {
+    pub(crate) fn new_container_root(host_id: T) -> Self {
+        Self {
+            host_id,
+            container_id: 0.into(),
+            size: 1,
+        }
+    }
+}
 
 pub struct Manager {
     state_path: PathBuf,
     cgroup_path: PathBuf,
+    uid_map: Vec<IdMap<Uid>>,
+    gid_map: Vec<IdMap<Gid>>,
 }
 
 impl Manager {
@@ -28,6 +49,8 @@ impl Manager {
         Ok(Self {
             state_path,
             cgroup_path,
+            uid_map: vec![IdMap::new_container_root(getuid())],
+            gid_map: vec![IdMap::new_container_root(getgid())],
         })
     }
 
@@ -50,7 +73,10 @@ impl Manager {
         let container = Container {
             state_path,
             cgroup_path,
+            uid_map: self.uid_map.clone(),
+            gid_map: self.gid_map.clone(),
             config,
+            init_process: None,
         };
         Ok(container)
     }
