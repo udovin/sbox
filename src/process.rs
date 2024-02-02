@@ -42,8 +42,8 @@ impl Default for ProcessConfig {
 }
 
 pub struct Process {
-    pub(super) pid: Pid,
-    pub(super) config: ProcessConfig,
+    pid: Pid,
+    config: ProcessConfig,
 }
 
 impl Process {

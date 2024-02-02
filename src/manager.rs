@@ -6,7 +6,7 @@ use nix::unistd::{getgid, getuid};
 
 use crate::{Container, ContainerConfig, Gid, Uid};
 
-pub type Error = Box<dyn std::error::Error>;
+pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
 #[derive(Debug, Clone)]
 pub struct IdMap<T> {
@@ -76,7 +76,7 @@ impl Manager {
             uid_map: self.uid_map.clone(),
             gid_map: self.gid_map.clone(),
             config,
-            init_process: None,
+            pid: None,
         };
         Ok(container)
     }

@@ -26,17 +26,18 @@ pub struct Container {
     pub(super) uid_map: Vec<IdMap<Uid>>,
     pub(super) gid_map: Vec<IdMap<Gid>>,
     pub(super) config: ContainerConfig,
-    pub(super) init_process: Option<Process>,
+    pub(super) pid: Option<Pid>,
 }
 
 impl Container {
     /// Starts container with initial process.
-    pub fn start(&mut self, config: ProcessConfig) -> Result<&Process, Error> {
-        if self.init_process.is_some() {
+    pub fn start(&mut self, config: ProcessConfig) -> Result<Process, Error> {
+        if self.pid.is_some() {
             return Err("container already started".into());
         }
-        self.init_process = Some(Process::run_init(&self, config)?);
-        Ok(self.init_process.as_ref().unwrap())
+        let process = Process::run_init(&self, config)?;
+        self.pid = Some(process.pid());
+        Ok(process)
     }
 
     /// Executes process inside container.
