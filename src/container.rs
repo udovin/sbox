@@ -35,7 +35,7 @@ impl Container {
         if self.pid.is_some() {
             return Err("container already started".into());
         }
-        let process = Process::run_init(&self, config)?;
+        let process = Process::run_init(self, config)?;
         self.pid = Some(process.pid());
         Ok(process)
     }
@@ -51,7 +51,7 @@ impl Container {
         let mut file = File::options()
             .write(true)
             .open(self.cgroup_path.join("cgroup.kill"))?;
-        file.write("1".as_bytes())?;
+        file.write_all("1".as_bytes())?;
         drop(file);
         Ok(())
     }
@@ -67,21 +67,7 @@ impl Container {
     }
 
     fn remove_state(&self) -> Result<(), Error> {
-        self.remove_overlay_diff()
-            .map_err(|err| format!("cannot remove container diff: {}", err))?;
-        self.remove_overlay_work()
-            .map_err(|err| format!("cannot remove container overlay work: {}", err))?;
-        Ok(remove_dir_all(&self.state_path)
-            .map_err(|err| format!("cannot remove container state: {}", err))?)
-    }
-
-    fn remove_overlay_diff(&self) -> Result<(), Error> {
-        self.run_as_root(|| Ok(remove_dir_all(&self.state_path.join("diff"))?))
-    }
-
-    fn remove_overlay_work(&self) -> Result<(), Error> {
-        remove_dir(&self.state_path.join("work/work"))?;
-        Ok(remove_dir(&self.state_path.join("work"))?)
+        self.run_as_root(|| Ok(remove_dir_all(&self.state_path)?))
     }
 
     fn run_as_root<Fn: FnOnce() -> Result<(), Error>>(&self, func: Fn) -> Result<(), Error> {
@@ -102,7 +88,7 @@ impl Container {
                 // Setup user namespace.
                 self.setup_user_namespace(pid)?;
                 // Unlock child process.
-                parent_tx.write(&[0])?;
+                parent_tx.write_all(&[0])?;
                 drop(parent_tx);
                 // Wait for exit.
                 waitpid(pid, Some(WaitPidFlag::__WALL))?;

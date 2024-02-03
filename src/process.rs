@@ -112,7 +112,7 @@ impl Process {
     ) -> Result<(), Error> {
         container.setup_user_namespace(pid)?;
         // Unlock child process.
-        tx.write(&[0])?;
+        tx.write_all(&[0])?;
         drop(tx);
         // Await child process is started.
         rx.read_exact(&mut [0; 1])?;
@@ -147,7 +147,7 @@ impl Process {
             .map(|v| CString::new(v.as_bytes()))
             .try_collect()?;
         // Unlock parent process.
-        tx.write(&[0])?;
+        tx.write_all(&[0])?;
         drop(tx);
         // Run process.
         execvpe(&filename, &argv, &envp)?;
@@ -161,14 +161,14 @@ impl Process {
         // First of all make all changes are private for current root.
         mount(
             None::<&str>,
-            "/".into(),
+            "/",
             None::<&str>,
             MsFlags::MS_SLAVE | MsFlags::MS_REC,
             None::<&str>,
         )?;
         mount(
             None::<&str>,
-            "/".into(),
+            "/",
             None::<&str>,
             MsFlags::MS_PRIVATE,
             None::<&str>,
