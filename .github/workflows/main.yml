@@ -4,6 +4,7 @@ env:
   CARGO_TERM_COLOR: always
 jobs:
   test:
+    name: Test Repository
     runs-on: ubuntu-22.04
     steps:
     - name: Check out code into the Go module directory
@@ -16,7 +17,7 @@ jobs:
     - name: Build
       run: cargo build --verbose
     - name: Run tests
-      run: cargo test --verbose
+      run: sudo -E PATH="$PATH" -- cargo test --verbose
       env:
         CARGO_INCREMENTAL: '0'
         RUSTFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
