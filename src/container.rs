@@ -84,7 +84,7 @@ impl Container {
                 match func() {
                     Ok(()) => exit(0),
                     Err(err) => {
-                        eprintln!("{}", err.to_string());
+                        eprintln!("{}", err);
                         exit(1)
                     }
                 }
@@ -93,7 +93,7 @@ impl Container {
                 drop(parent_rx);
                 // Setup user namespace.
                 self.setup_user_namespace(pid)
-                    .map_err(|v| format!("Cannot setup user namespace: {}", v.to_string()))?;
+                    .map_err(|v| format!("Cannot setup user namespace: {}", v))?;
                 // Unlock child process.
                 parent_tx.write_all(&[0])?;
                 drop(parent_tx);

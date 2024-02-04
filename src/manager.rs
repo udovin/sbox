@@ -40,10 +40,9 @@ impl Manager {
         let state_path = state_path.into();
         let cgroup_path = cgroup_path.into();
         assert!(cgroup_path.starts_with("/sys/fs/cgroup/"));
-        create_dir_all(&state_path)
-            .map_err(|v| format!("Cannot create state directory: {}", v.to_string()))?;
         ignore_kind(create_dir(&cgroup_path), ErrorKind::AlreadyExists)
-            .map_err(|v| format!("Cannot create cgroup: {}", v.to_string()))?;
+            .map_err(|v| format!("Cannot create cgroup: {}", v))?;
+        create_dir_all(&state_path).map_err(|v| format!("Cannot create state directory: {}", v))?;
         Ok(Self {
             state_path,
             cgroup_path,
@@ -63,10 +62,10 @@ impl Manager {
     ) -> Result<Container, Error> {
         let state_path = self.state_path.join(&id);
         let cgroup_path = self.cgroup_path.join(&id);
-        create_dir(&cgroup_path)?;
+        create_dir(&cgroup_path).map_err(|v| format!("Cannot create cgroup: {}", v))?;
         if let Err(err) = create_dir(&state_path) {
             let _ = remove_dir(cgroup_path);
-            return Err(err.into());
+            return Err(format!("Cannot create state directory: {}", err).into());
         }
         let container = Container {
             state_path,

@@ -97,7 +97,7 @@ impl Process {
                     config,
                 };
                 if let Err(err) = process.start_child(parent_rx, child_tx, container) {
-                    eprintln!("{}", err.to_string());
+                    eprintln!("{}", err);
                 }
                 // Always exit with an error because this code is unreachable during normal execution.
                 exit(1)
@@ -122,7 +122,7 @@ impl Process {
     ) -> Result<(), Error> {
         container
             .setup_user_namespace(pid)
-            .map_err(|v| format!("Cannot setup user namespace: {}", v.to_string()))?;
+            .map_err(|v| format!("Cannot setup user namespace: {}", v))?;
         // Unlock child process.
         tx.write_all(&[0])?;
         drop(tx);
@@ -138,9 +138,9 @@ impl Process {
         drop(rx);
         // Setup mount namespace.
         Self::setup_mount_namespace(container)
-            .map_err(|v| format!("Cannot setup mount namespace: {}", v.to_string()))?;
+            .map_err(|v| format!("Cannot setup mount namespace: {}", v))?;
         Self::setup_uts_namespace(container)
-            .map_err(|v| format!("Cannot setup UTS namespace: {}", v.to_string()))?;
+            .map_err(|v| format!("Cannot setup UTS namespace: {}", v))?;
         // Setup workdir.
         chdir(&self.config.work_dir)?;
         // Setup user.
