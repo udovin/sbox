@@ -62,12 +62,14 @@ fn get_cgroup() -> Result<PathBuf, Error> {
                 continue;
             }
         }
-        return Ok(PathBuf::from("/sys/fs/cgroup").join(
-            parts
-                .get(2)
-                .ok_or("expected cgroup path")?
-                .trim_start_matches('/'),
-        ));
+        return Ok(PathBuf::from("/sys/fs/cgroup")
+            .join(
+                parts
+                    .get(2)
+                    .ok_or("expected cgroup path")?
+                    .trim_start_matches('/'),
+            )
+            .join("sbox-test"));
     }
     todo!()
 }
