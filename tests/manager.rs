@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use sbox::{ContainerConfig, Error, IdMap, Manager, ProcessConfig};
+use sbox::{ContainerConfig, Error, Manager, ProcessConfig};
 
 fn get_rootfs() -> Result<PathBuf, Error> {
     let mut child = std::process::Command::new("/bin/sh")
@@ -50,6 +50,6 @@ fn test_manager() {
         ..Default::default()
     };
     let process = container.start(process_config).unwrap();
-    process.wait().unwrap();
+    process.wait(None).unwrap();
     container.destroy().unwrap();
 }

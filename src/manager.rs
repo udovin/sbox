@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use nix::unistd::{getgid, getuid};
 
-use crate::{Container, ContainerConfig, Gid, Uid};
+use crate::{ignore_kind, Container, ContainerConfig, Gid, Uid};
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -40,12 +40,10 @@ impl Manager {
         let state_path = state_path.into();
         let cgroup_path = cgroup_path.into();
         assert!(cgroup_path.starts_with("/sys/fs/cgroup/"));
-        create_dir_all(&state_path)?;
-        if let Err(err) = create_dir(&cgroup_path) {
-            if err.kind() != ErrorKind::AlreadyExists {
-                return Err(format!("cannot create cgroup: {}", err).into());
-            }
-        }
+        create_dir_all(&state_path)
+            .map_err(|v| format!("Cannot create state directory: {}", v.to_string()))?;
+        ignore_kind(create_dir(&cgroup_path), ErrorKind::AlreadyExists)
+            .map_err(|v| format!("Cannot create cgroup: {}", v.to_string()))?;
         Ok(Self {
             state_path,
             cgroup_path,

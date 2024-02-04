@@ -7,24 +7,26 @@ jobs:
     name: Test Repository
     runs-on: ubuntu-22.04
     steps:
-    - name: Check out code into the Go module directory
-      uses: actions/checkout@v3
     - name: Set up Rust
       uses: actions-rs/toolchain@v1
       with:
         toolchain: nightly
         override: true
-    - name: Build
+    - name: Check out code
+      uses: actions/checkout@v3
+    - name: Run build
       run: cargo build --verbose
     - name: Run tests
-      run: sudo -E PATH="$PATH" -- cargo test --verbose
+      run: cargo test --verbose
       env:
         CARGO_INCREMENTAL: '0'
         RUSTFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
         RUSTDOCFLAGS: '-Zprofile -Ccodegen-units=1 -Cinline-threshold=0 -Clink-dead-code -Coverflow-checks=off -Cpanic=abort -Zpanic_abort_tests'
     - name: rust-grcov
+      if: success() || failure()
       uses: actions-rs/grcov@v0.1
     - name: Codecov
+      if: success() || failure()
       uses: codecov/codecov-action@v4-beta
       env:
         CODECOV_TOKEN: ${{secrets.CODECOV_TOKEN}}

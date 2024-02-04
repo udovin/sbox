@@ -1,8 +1,8 @@
 use std::fs::{remove_dir, remove_dir_all, File};
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::os::fd::FromRawFd;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{exit, Command};
 
 use nix::fcntl::{open, OFlag};
 use nix::mount::{mount, umount2, MntFlags, MsFlags};
@@ -80,13 +80,20 @@ impl Container {
                 // Await parent process is initialized pid.
                 parent_rx.read_exact(&mut [0; 1])?;
                 drop(parent_rx);
-                func()?;
-                std::process::exit(0)
+                // Execute code inside user namespace.
+                match func() {
+                    Ok(()) => exit(0),
+                    Err(err) => {
+                        eprintln!("{}", err.to_string());
+                        exit(1)
+                    }
+                }
             }
             Clone::Parent(pid) => {
                 drop(parent_rx);
                 // Setup user namespace.
-                self.setup_user_namespace(pid)?;
+                self.setup_user_namespace(pid)
+                    .map_err(|v| format!("Cannot setup user namespace: {}", v.to_string()))?;
                 // Unlock child process.
                 parent_tx.write_all(&[0])?;
                 drop(parent_tx);
@@ -101,6 +108,19 @@ impl Container {
         run_newidmap("/bin/newuidmap", pid, &self.uid_map)?;
         run_newidmap("/bin/newgidmap", pid, &self.gid_map)?;
         Ok(())
+    }
+}
+
+pub(crate) fn ignore_kind(result: std::io::Result<()>, kind: ErrorKind) -> std::io::Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            if err.kind() == kind {
+                Ok(())
+            } else {
+                Err(err)
+            }
+        }
     }
 }
 
@@ -143,12 +163,7 @@ fn run_newidmap<T: ToString>(binary: &str, pid: Pid, id_map: &[IdMap<T>]) -> Res
     let mut child = cmd.spawn()?;
     let status = child.wait()?;
     if !status.success() {
-        return Err(format!(
-            "{} exited with status: {}",
-            binary,
-            status.code().unwrap_or(0)
-        )
-        .into());
+        return Err(format!("{} exited with code {}", binary, status.code().unwrap_or(0)).into());
     }
     Ok(())
 }

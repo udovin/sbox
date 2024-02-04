@@ -4,13 +4,14 @@ use std::io::{ErrorKind, Read, Write};
 use std::os::fd::RawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::process::exit;
 
 use nix::mount::{mount, MsFlags};
 use nix::sys::signal::kill;
 use nix::sys::wait::{waitpid, WaitPidFlag};
 use nix::unistd::{chdir, execvpe, setgid, sethostname, setuid, Gid, Pid, Uid};
 
-use crate::{clone3, new_pipe, pivot_root, Clone, CloneArgs, Container, Error};
+use crate::{clone3, ignore_kind, new_pipe, pivot_root, Clone, CloneArgs, Container, Error};
 
 pub type Signal = nix::sys::signal::Signal;
 pub type WaitStatus = nix::sys::wait::WaitStatus;
@@ -55,14 +56,20 @@ impl Process {
         Ok(kill(self.pid, signal)?)
     }
 
-    pub fn wait(&self) -> Result<WaitStatus, Error> {
-        let flags = WaitPidFlag::__WALL;
-        Ok(waitpid(self.pid, Some(flags))?)
+    pub fn wait(&self, flags: Option<WaitPidFlag>) -> Result<WaitStatus, Error> {
+        let flags = flags.unwrap_or(WaitPidFlag::empty());
+        Ok(waitpid(self.pid, Some(flags | WaitPidFlag::__WALL))?)
     }
 
     pub(super) fn run_init(container: &Container, config: ProcessConfig) -> Result<Process, Error> {
-        create_dir(container.state_path.join("rootfs"))?;
-        create_dir(container.state_path.join("diff"))?;
+        ignore_kind(
+            create_dir(container.state_path.join("rootfs")),
+            ErrorKind::AlreadyExists,
+        )?;
+        ignore_kind(
+            create_dir(container.state_path.join("diff")),
+            ErrorKind::AlreadyExists,
+        )?;
         create_dir(container.state_path.join("work"))?;
         let cgroup = File::options()
             .read(true)
@@ -89,8 +96,11 @@ impl Process {
                     pid: Pid::from_raw(0),
                     config,
                 };
-                process.start_child(parent_rx, child_tx, container)?;
-                unreachable!()
+                if let Err(err) = process.start_child(parent_rx, child_tx, container) {
+                    eprintln!("{}", err.to_string());
+                }
+                // Always exit with an error because this code is unreachable during normal execution.
+                exit(1)
             }
             Clone::Parent(pid) => {
                 drop(cgroup);
@@ -110,7 +120,9 @@ impl Process {
         pid: Pid,
         container: &Container,
     ) -> Result<(), Error> {
-        container.setup_user_namespace(pid)?;
+        container
+            .setup_user_namespace(pid)
+            .map_err(|v| format!("Cannot setup user namespace: {}", v.to_string()))?;
         // Unlock child process.
         tx.write_all(&[0])?;
         drop(tx);
@@ -125,8 +137,10 @@ impl Process {
         rx.read_exact(&mut [0; 1])?;
         drop(rx);
         // Setup mount namespace.
-        Self::setup_mount_namespace(container)?;
-        Self::setup_uts_namespace(container)?;
+        Self::setup_mount_namespace(container)
+            .map_err(|v| format!("Cannot setup mount namespace: {}", v.to_string()))?;
+        Self::setup_uts_namespace(container)
+            .map_err(|v| format!("Cannot setup UTS namespace: {}", v.to_string()))?;
         // Setup workdir.
         chdir(&self.config.work_dir)?;
         // Setup user.
@@ -151,7 +165,7 @@ impl Process {
         drop(tx);
         // Run process.
         execvpe(&filename, &argv, &envp)?;
-        unreachable!()
+        Ok(())
     }
 
     pub(super) fn setup_mount_namespace(container: &Container) -> Result<(), Error> {
@@ -262,10 +276,16 @@ impl Process {
             .iter()
             .map(|v| v.as_os_str().to_str())
             .try_collect::<Vec<_>>()
-            .ok_or("invalid lowerdir path")?
+            .ok_or(format!("Invalid overlay lowerdir: {:?}", layers))?
             .join(":");
-        let upperdir = diff.as_os_str().to_str().ok_or("invalid upperdir path")?;
-        let workdir = work.as_os_str().to_str().ok_or("invalid workdir path")?;
+        let upperdir = diff
+            .as_os_str()
+            .to_str()
+            .ok_or(format!("Invalid overlay upperdir: {:?}", diff))?;
+        let workdir = work
+            .as_os_str()
+            .to_str()
+            .ok_or(format!("Invalid overlay workdir: {:?}", work))?;
         let mount_data = format!(
             "lowerdir={},upperdir={},workdir={}",
             lowerdir, upperdir, workdir,
@@ -288,11 +308,7 @@ impl Process {
         data: Option<&str>,
     ) -> Result<(), Error> {
         let target = rootfs.join(target.trim_start_matches('/'));
-        if let Err(err) = create_dir(&target) {
-            if err.kind() != ErrorKind::AlreadyExists {
-                return Err(err.into());
-            }
-        }
+        ignore_kind(create_dir(&target), ErrorKind::AlreadyExists)?;
         Ok(mount(source.into(), &target, fstype.into(), flags, data)?)
     }
 }
