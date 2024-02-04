@@ -7,13 +7,13 @@ jobs:
     name: Test Repository
     runs-on: ubuntu-22.04
     steps:
+    - name: Check out code
+      uses: actions/checkout@v3
     - name: Set up Rust
       uses: actions-rs/toolchain@v1
       with:
         toolchain: nightly
         override: true
-    - name: Check out code
-      uses: actions/checkout@v3
     - name: Run build
       run: cargo build --verbose
     - name: Run tests
