@@ -9,7 +9,7 @@ use nix::mount::{mount, umount2, MntFlags, MsFlags};
 use nix::sys::wait::{waitpid, WaitPidFlag};
 use nix::unistd::fchdir;
 
-use crate::{clone3, Clone, CloneArgs, Error, IdMap, Pid, Process, ProcessConfig};
+use crate::{clone3, CloneArgs, CloneResult, Error, IdMap, Pid, Process, ProcessConfig};
 
 pub type Uid = nix::unistd::Uid;
 pub type Gid = nix::unistd::Gid;
@@ -33,7 +33,7 @@ impl Container {
     /// Starts container with initial process.
     pub fn start(&mut self, config: ProcessConfig) -> Result<Process, Error> {
         if self.pid.is_some() {
-            return Err("container already started".into());
+            return Err("Container already started".into());
         }
         let process = Process::run_init(self, config)?;
         self.pid = Some(process.pid());
@@ -43,7 +43,7 @@ impl Container {
     /// Executes process inside container.
     #[allow(unused)]
     pub fn execute(&self, config: ProcessConfig) -> Result<Process, Error> {
-        todo!()
+        Process::run(self, config)
     }
 
     /// Kills all processes inside container.
@@ -75,7 +75,7 @@ impl Container {
         let mut clone_args = CloneArgs::default();
         clone_args.flag_newuser();
         match unsafe { clone3(&clone_args) }? {
-            Clone::Child => {
+            CloneResult::Child => {
                 drop(parent_tx);
                 // Await parent process is initialized pid.
                 parent_rx.read_exact(&mut [0; 1])?;
@@ -89,16 +89,16 @@ impl Container {
                     }
                 }
             }
-            Clone::Parent(pid) => {
+            CloneResult::Parent { child } => {
                 drop(parent_rx);
                 // Setup user namespace.
-                self.setup_user_namespace(pid)
+                self.setup_user_namespace(child)
                     .map_err(|v| format!("Cannot setup user namespace: {}", v))?;
                 // Unlock child process.
                 parent_tx.write_all(&[0])?;
                 drop(parent_tx);
                 // Wait for exit.
-                waitpid(pid, Some(WaitPidFlag::__WALL))?;
+                waitpid(child, Some(WaitPidFlag::__WALL))?;
             }
         };
         Ok(())

@@ -7,11 +7,14 @@ use std::path::{Path, PathBuf};
 use std::process::exit;
 
 use nix::mount::{mount, MsFlags};
+use nix::sched::CloneFlags;
 use nix::sys::signal::kill;
 use nix::sys::wait::{waitpid, WaitPidFlag};
-use nix::unistd::{chdir, execvpe, setgid, sethostname, setuid, Gid, Pid, Uid};
+use nix::unistd::{chdir, execvpe, fork, setgid, sethostname, setuid, ForkResult, Gid, Pid, Uid};
 
-use crate::{clone3, ignore_kind, new_pipe, pivot_root, Clone, CloneArgs, Container, Error};
+use crate::{
+    clone3, ignore_kind, new_pipe, pidfd_open, pivot_root, CloneArgs, CloneResult, Container, Error,
+};
 
 pub type Signal = nix::sys::signal::Signal;
 pub type WaitStatus = nix::sys::wait::WaitStatus;
@@ -44,6 +47,7 @@ impl Default for ProcessConfig {
 
 pub struct Process {
     pid: Pid,
+    #[allow(unused)]
     config: ProcessConfig,
 }
 
@@ -61,7 +65,77 @@ impl Process {
         Ok(waitpid(self.pid, Some(flags | WaitPidFlag::__WALL))?)
     }
 
-    pub(super) fn run_init(container: &Container, config: ProcessConfig) -> Result<Process, Error> {
+    pub(crate) fn run(container: &Container, config: ProcessConfig) -> Result<Process, Error> {
+        let pid = match container.pid {
+            Some(v) => v,
+            None => return Err("Container should be started".into()),
+        };
+        let (child_rx, child_tx) = new_pipe()?;
+        match unsafe { fork() }? {
+            ForkResult::Child => {
+                drop(child_rx);
+                if let Err(err) = Self::start_child(child_tx, config, pid) {
+                    eprintln!("{}", err);
+                }
+                // Always exit with an error because this code is unreachable during normal execution.
+                exit(1)
+            }
+            ForkResult::Parent { child } => {
+                drop(child_tx);
+                let process = Process { pid: child, config };
+                process.start_parent(child_rx)?;
+                Ok(process)
+            }
+        }
+    }
+
+    fn start_parent(&self, mut rx: File) -> Result<(), Error> {
+        // Await child process is started.
+        rx.read_exact(&mut [0; 1])?;
+        drop(rx);
+        Ok(())
+    }
+
+    fn start_child(mut tx: File, config: ProcessConfig, pid: Pid) -> Result<(), Error> {
+        // Setup namespaces.
+        let pidfd = pidfd_open(pid)?;
+        let flags = CloneFlags::CLONE_NEWUSER
+            | CloneFlags::CLONE_NEWNS
+            | CloneFlags::CLONE_NEWPID
+            | CloneFlags::CLONE_NEWNET
+            | CloneFlags::CLONE_NEWIPC
+            | CloneFlags::CLONE_NEWUTS
+            | CloneFlags::from_bits_retain(nix::libc::CLONE_NEWTIME)
+            | CloneFlags::CLONE_NEWCGROUP;
+        nix::sched::setns(pidfd, flags)?;
+        // Setup cgroup.
+        // TODO.
+        // Setup workdir.
+        chdir(&config.work_dir)?;
+        // Setup user.
+        setuid(config.uid)?;
+        setgid(config.gid)?;
+        // Prepare exec arguments.
+        let filename = CString::new(config.command[0].as_bytes())?;
+        let argv: Vec<_> = config
+            .command
+            .iter()
+            .map(|v| CString::new(v.as_bytes()))
+            .try_collect()?;
+        let envp: Vec<_> = config
+            .environ
+            .iter()
+            .map(|v| CString::new(v.as_bytes()))
+            .try_collect()?;
+        // Unlock parent process.
+        tx.write_all(&[0])?;
+        drop(tx);
+        // Run process.
+        execvpe(&filename, &argv, &envp)?;
+        Ok(())
+    }
+
+    pub(crate) fn run_init(container: &Container, config: ProcessConfig) -> Result<Process, Error> {
         ignore_kind(
             create_dir(container.state_path.join("rootfs")),
             ErrorKind::AlreadyExists,
@@ -88,40 +162,35 @@ impl Process {
         cl_args.flag_newcgroup();
         cl_args.flag_into_cgroup(&cgroup);
         match unsafe { clone3(&cl_args) }? {
-            Clone::Child => {
+            CloneResult::Child => {
                 drop(cgroup);
                 drop(parent_tx);
                 drop(child_rx);
-                let process = Self {
-                    pid: Pid::from_raw(0),
-                    config,
-                };
-                if let Err(err) = process.start_child(parent_rx, child_tx, container) {
+                if let Err(err) = Self::start_init_child(parent_rx, child_tx, container, config) {
                     eprintln!("{}", err);
                 }
                 // Always exit with an error because this code is unreachable during normal execution.
                 exit(1)
             }
-            Clone::Parent(pid) => {
+            CloneResult::Parent { child } => {
                 drop(cgroup);
                 drop(parent_rx);
                 drop(child_tx);
-                let process = Self { pid, config };
-                process.start_parent(child_rx, parent_tx, pid, container)?;
+                let process = Self { pid: child, config };
+                process.start_init_parent(child_rx, parent_tx, container)?;
                 Ok(process)
             }
         }
     }
 
-    fn start_parent(
+    fn start_init_parent(
         &self,
         mut rx: File,
         mut tx: File,
-        pid: Pid,
         container: &Container,
     ) -> Result<(), Error> {
         container
-            .setup_user_namespace(pid)
+            .setup_user_namespace(self.pid)
             .map_err(|v| format!("Cannot setup user namespace: {}", v))?;
         // Unlock child process.
         tx.write_all(&[0])?;
@@ -132,7 +201,12 @@ impl Process {
         Ok(())
     }
 
-    fn start_child(&self, mut rx: File, mut tx: File, container: &Container) -> Result<(), Error> {
+    fn start_init_child(
+        mut rx: File,
+        mut tx: File,
+        container: &Container,
+        config: ProcessConfig,
+    ) -> Result<(), Error> {
         // Await parent process is initialized pid.
         rx.read_exact(&mut [0; 1])?;
         drop(rx);
@@ -142,20 +216,18 @@ impl Process {
         Self::setup_uts_namespace(container)
             .map_err(|v| format!("Cannot setup UTS namespace: {}", v))?;
         // Setup workdir.
-        chdir(&self.config.work_dir)?;
+        chdir(&config.work_dir)?;
         // Setup user.
-        setuid(self.config.uid)?;
-        setgid(self.config.gid)?;
+        setuid(config.uid)?;
+        setgid(config.gid)?;
         // Prepare exec arguments.
-        let filename = CString::new(self.config.command[0].as_bytes())?;
-        let argv: Vec<_> = self
-            .config
+        let filename = CString::new(config.command[0].as_bytes())?;
+        let argv: Vec<_> = config
             .command
             .iter()
             .map(|v| CString::new(v.as_bytes()))
             .try_collect()?;
-        let envp: Vec<_> = self
-            .config
+        let envp: Vec<_> = config
             .environ
             .iter()
             .map(|v| CString::new(v.as_bytes()))

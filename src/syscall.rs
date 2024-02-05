@@ -1,4 +1,9 @@
-use std::os::fd::AsRawFd;
+use std::{
+    fs::File,
+    os::fd::{AsRawFd, FromRawFd, RawFd},
+};
+
+use nix::{errno::Errno, libc::syscall};
 
 pub type Pid = nix::unistd::Pid;
 
@@ -57,19 +62,32 @@ impl CloneArgs {
     }
 }
 
-pub(crate) enum Clone {
+pub(crate) enum CloneResult {
     Child,
-    Parent(Pid),
+    Parent { child: Pid },
 }
 
-pub(crate) unsafe fn clone3(cl_args: &CloneArgs) -> Result<Clone, nix::errno::Errno> {
-    let res = nix::libc::syscall(
+pub(crate) unsafe fn clone3(cl_args: &CloneArgs) -> Result<CloneResult, Errno> {
+    let res = syscall(
         nix::libc::SYS_clone3,
         cl_args as *const CloneArgs,
         core::mem::size_of::<CloneArgs>(),
     );
-    nix::errno::Errno::result(res).map(|v| match v {
-        0 => Clone::Child,
-        v => Clone::Parent(Pid::from_raw(v as nix::libc::pid_t)),
+    Errno::result(res).map(|v| match v {
+        0 => CloneResult::Child,
+        v => CloneResult::Parent {
+            child: Pid::from_raw(v as nix::libc::pid_t),
+        },
     })
+}
+
+pub(crate) fn pidfd_open(pid: Pid) -> Result<File, Errno> {
+    let res = unsafe {
+        syscall(
+            nix::libc::SYS_pidfd_open,
+            pid.as_raw(),
+            0 as nix::libc::c_uint,
+        )
+    };
+    Errno::result(res).map(|v| unsafe { File::from_raw_fd(v as RawFd) })
 }

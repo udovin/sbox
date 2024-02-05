@@ -1,15 +1,15 @@
 [package]
 name = "sbox"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Tiny Linux containers implementation"
-repository = "https://github.com/udovin/sbox-rs"
+repository = "https://github.com/udovin/sbox"
 keywords = ["sandbox", "linux"]
 categories = ["virtualization"]
 
 [dependencies]
-nix = { version = "0.27.1", features = ["signal", "user", "hostname", "fs", "mount"] }
+nix = { version = "0.27.1", features = ["signal", "user", "hostname", "fs", "mount", "sched"] }
 
 [dev-dependencies]
 rand = "0.8.5"
