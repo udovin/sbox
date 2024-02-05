@@ -1,15 +1,16 @@
 use std::fs::{remove_dir, remove_dir_all, File};
-use std::io::{ErrorKind, Read, Write};
+use std::io::{ErrorKind, Write};
 use std::os::fd::FromRawFd;
 use std::path::{Path, PathBuf};
-use std::process::{exit, Command};
+use std::process::Command;
 
+use nix::errno::Errno;
 use nix::fcntl::{open, OFlag};
 use nix::mount::{mount, umount2, MntFlags, MsFlags};
 use nix::sys::wait::{waitpid, WaitPidFlag};
 use nix::unistd::fchdir;
 
-use crate::{clone3, CloneArgs, CloneResult, Error, IdMap, Pid, Process, ProcessConfig};
+use crate::{Error, ExecuteTask, IdMap, InitTask, Pid, Process, ProcessConfig, RootFnTask};
 
 pub type Uid = nix::unistd::Uid;
 pub type Gid = nix::unistd::Gid;
@@ -35,15 +36,14 @@ impl Container {
         if self.pid.is_some() {
             return Err("Container already started".into());
         }
-        let process = Process::run_init(self, config)?;
+        let process = InitTask::start(self, config)?;
         self.pid = Some(process.pid());
         Ok(process)
     }
 
     /// Executes process inside container.
-    #[allow(unused)]
     pub fn execute(&self, config: ProcessConfig) -> Result<Process, Error> {
-        Process::run(self, config)
+        ExecuteTask::start(self, config)
     }
 
     /// Kills all processes inside container.
@@ -53,10 +53,20 @@ impl Container {
             .open(self.cgroup_path.join("cgroup.kill"))?;
         file.write_all("1".as_bytes())?;
         drop(file);
-        if let Some(pid) = self.pid.take() {
-            let _ = waitpid(pid, Some(WaitPidFlag::__WALL));
+        self.stop()
+    }
+
+    /// Stops container.
+    pub fn stop(&mut self) -> Result<(), Error> {
+        let pid = match self.pid.take() {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+        match waitpid(pid, Some(WaitPidFlag::__WALL)) {
+            Ok(_) => Ok(()),
+            Err(Errno::ECHILD) => Ok(()),
+            Err(err) => Err(err.into()),
         }
-        Ok(())
     }
 
     /// Releases all associated resources with container.
@@ -70,7 +80,8 @@ impl Container {
     }
 
     fn remove_state(&self) -> Result<(), Error> {
-        AsRootTask::start(self, || Ok(remove_dir_all(&self.state_path)?))
+        let func = || Ok(remove_dir_all(&self.state_path)?);
+        RootFnTask::start(&self.uid_map, &self.gid_map, func)
     }
 
     pub(super) fn setup_user_namespace(&self, pid: Pid) -> Result<(), Error> {
@@ -86,57 +97,6 @@ impl Drop for Container {
             let _ = self.kill();
             let _ = waitpid(pid, Some(WaitPidFlag::__WALL));
         }
-    }
-}
-
-struct AsRootTask<T> {
-    func: T,
-    rx: File,
-}
-
-impl<T: FnOnce() -> Result<(), Error>> AsRootTask<T> {
-    pub fn start(container: &Container, func: T) -> Result<(), Error> {
-        let (rx, tx) = new_pipe()?;
-        let mut clone_args = CloneArgs::default();
-        clone_args.flag_newuser();
-        match unsafe { clone3(&clone_args) }? {
-            CloneResult::Child => {
-                drop(tx);
-                match (AsRootTask { func, rx }).child_main() {
-                    Ok(()) => exit(0),
-                    Err(err) => {
-                        eprintln!("{}", err);
-                        exit(1)
-                    }
-                }
-            }
-            CloneResult::Parent { child } => {
-                drop(rx);
-                let result = Self::parent_main(container, tx, child);
-                // Wait for exit.
-                waitpid(child, Some(WaitPidFlag::__WALL))?;
-                result
-            }
-        }
-    }
-
-    fn child_main(mut self) -> Result<(), Error> {
-        // Await parent process is initialized pid.
-        self.rx.read_exact(&mut [0; 1])?;
-        drop(self.rx);
-        // Execute code inside user namespace.
-        (self.func)()
-    }
-
-    fn parent_main(container: &Container, mut tx: File, pid: Pid) -> Result<(), Error> {
-        // Setup user namespace.
-        container
-            .setup_user_namespace(pid)
-            .map_err(|v| format!("Cannot setup user namespace: {}", v))?;
-        // Unlock child process.
-        tx.write_all(&[0])?;
-        drop(tx);
-        Ok(())
     }
 }
 
@@ -181,7 +141,11 @@ pub(crate) fn pivot_root(path: &Path) -> Result<(), Error> {
     Ok(fchdir(new_root)?)
 }
 
-fn run_newidmap<T: ToString>(binary: &str, pid: Pid, id_map: &[IdMap<T>]) -> Result<(), Error> {
+pub(crate) fn run_newidmap<T: ToString>(
+    binary: &str,
+    pid: Pid,
+    id_map: &[IdMap<T>],
+) -> Result<(), Error> {
     let mut cmd = Command::new(binary);
     cmd.arg(pid.as_raw().to_string());
     for v in id_map {

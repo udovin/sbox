@@ -118,5 +118,6 @@ fn test_manager() {
         .unwrap();
     process.wait(None).unwrap();
     init_process.wait(None).unwrap();
+    container.stop().unwrap();
     container.destroy().unwrap();
 }

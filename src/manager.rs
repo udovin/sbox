@@ -62,6 +62,7 @@ impl Manager {
     ) -> Result<Container, Error> {
         let state_path = self.state_path.join(&id);
         let cgroup_path = self.cgroup_path.join(&id);
+        ignore_kind(remove_dir(&cgroup_path), ErrorKind::NotFound)?;
         create_dir(&cgroup_path).map_err(|v| format!("Cannot create cgroup: {}", v))?;
         if let Err(err) = create_dir(&state_path) {
             let _ = remove_dir(cgroup_path);
