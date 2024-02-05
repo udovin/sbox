@@ -70,11 +70,11 @@ impl Process {
             Some(v) => v,
             None => return Err("Container should be started".into()),
         };
-        let (child_rx, child_tx) = new_pipe()?;
+        let (mut child_rx, child_tx) = new_pipe()?;
         match unsafe { fork() }? {
             ForkResult::Child => {
                 drop(child_rx);
-                if let Err(err) = Self::start_child(child_tx, config, pid) {
+                if let Err(err) = Self::start_child(child_tx, container, config, pid) {
                     eprintln!("{}", err);
                 }
                 // Always exit with an error because this code is unreachable during normal execution.
@@ -82,34 +82,65 @@ impl Process {
             }
             ForkResult::Parent { child } => {
                 drop(child_tx);
-                let process = Process { pid: child, config };
-                process.start_parent(child_rx)?;
-                Ok(process)
+                let pid = read_pid(&mut child_rx)?;
+                waitpid(child, Some(WaitPidFlag::__WALL))?;
+                Ok(Process { pid, config })
             }
         }
     }
 
-    fn start_parent(&self, mut rx: File) -> Result<(), Error> {
-        // Await child process is started.
-        rx.read_exact(&mut [0; 1])?;
-        drop(rx);
-        Ok(())
-    }
-
-    fn start_child(mut tx: File, config: ProcessConfig, pid: Pid) -> Result<(), Error> {
-        // Setup namespaces.
-        let pidfd = pidfd_open(pid)?;
+    fn start_child(
+        mut tx: File,
+        container: &Container,
+        config: ProcessConfig,
+        pid: Pid,
+    ) -> Result<(), Error> {
+        let cgroup = File::options()
+            .read(true)
+            .custom_flags(nix::libc::O_PATH | nix::libc::O_DIRECTORY)
+            .open(&container.cgroup_path)?;
+        // Enter namespaces.
+        let pidfd = pidfd_open(pid).map_err(|v| format!("Cannot read container pidfd: {}", v))?;
         let flags = CloneFlags::CLONE_NEWUSER
             | CloneFlags::CLONE_NEWNS
             | CloneFlags::CLONE_NEWPID
             | CloneFlags::CLONE_NEWNET
             | CloneFlags::CLONE_NEWIPC
             | CloneFlags::CLONE_NEWUTS
-            | CloneFlags::from_bits_retain(nix::libc::CLONE_NEWTIME)
-            | CloneFlags::CLONE_NEWCGROUP;
-        nix::sched::setns(pidfd, flags)?;
-        // Setup cgroup.
-        // TODO.
+            | CloneFlags::from_bits_retain(nix::libc::CLONE_NEWTIME);
+        nix::sched::setns(&pidfd, flags).map_err(|v| format!("Cannot enter container: {}", v))?;
+        let (mut child_rx, child_tx) = new_pipe()?;
+        let mut clone_args = CloneArgs::default();
+        clone_args.flag_parent();
+        clone_args.flag_into_cgroup(&cgroup);
+        match unsafe { clone3(&clone_args) }? {
+            CloneResult::Child => {
+                drop(cgroup);
+                drop(child_rx);
+                if let Err(err) = Self::start_child_child(child_tx, config, pidfd) {
+                    eprintln!("{}", err);
+                }
+                // Always exit with an error because this code is unreachable during normal execution.
+                exit(1)
+            }
+            CloneResult::Parent { child } => {
+                drop(cgroup);
+                drop(pidfd);
+                drop(child_tx);
+                // Await child process is started.
+                child_rx.read_exact(&mut [0; 1])?;
+                drop(child_rx);
+                // Send child pid to parent process.
+                write_pid(&mut tx, child)?;
+                Ok(())
+            }
+        }
+    }
+
+    fn start_child_child(mut tx: File, config: ProcessConfig, pidfd: File) -> Result<(), Error> {
+        // Setup cgroup namespace.
+        nix::sched::setns(pidfd, CloneFlags::CLONE_NEWCGROUP)
+            .map_err(|v| format!("Cannot enter container: {}", v))?;
         // Setup workdir.
         chdir(&config.work_dir)?;
         // Setup user.
@@ -151,17 +182,17 @@ impl Process {
             .open(&container.cgroup_path)?;
         let (parent_rx, parent_tx) = new_pipe()?;
         let (child_rx, child_tx) = new_pipe()?;
-        let mut cl_args = CloneArgs::default();
-        cl_args.flag_newuser();
-        cl_args.flag_newns();
-        cl_args.flag_newpid();
-        cl_args.flag_newnet();
-        cl_args.flag_newipc();
-        cl_args.flag_newuts();
-        cl_args.flag_newtime();
-        cl_args.flag_newcgroup();
-        cl_args.flag_into_cgroup(&cgroup);
-        match unsafe { clone3(&cl_args) }? {
+        let mut clone_args = CloneArgs::default();
+        clone_args.flag_newuser();
+        clone_args.flag_newns();
+        clone_args.flag_newpid();
+        clone_args.flag_newnet();
+        clone_args.flag_newipc();
+        clone_args.flag_newuts();
+        clone_args.flag_newtime();
+        clone_args.flag_newcgroup();
+        clone_args.flag_into_cgroup(&cgroup);
+        match unsafe { clone3(&clone_args) }? {
             CloneResult::Child => {
                 drop(cgroup);
                 drop(parent_tx);
@@ -383,4 +414,16 @@ impl Process {
         ignore_kind(create_dir(&target), ErrorKind::AlreadyExists)?;
         Ok(mount(source.into(), &target, fstype.into(), flags, data)?)
     }
+}
+
+fn write_pid(file: &mut File, pid: Pid) -> Result<(), Error> {
+    let buf = pid.as_raw().to_le_bytes();
+    file.write_all(&buf)?;
+    Ok(())
+}
+
+fn read_pid(file: &mut File) -> Result<Pid, Error> {
+    let mut buf = [0; 4];
+    file.read_exact(&mut buf)?;
+    Ok(Pid::from_raw(nix::libc::pid_t::from_le_bytes(buf)))
 }

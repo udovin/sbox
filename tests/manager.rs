@@ -18,11 +18,16 @@ impl TempDir {
     pub fn as_path(&self) -> &Path {
         self.0.as_path()
     }
+
+    #[allow(unused)]
+    pub fn release(self) -> Result<(), Error> {
+        Ok(std::fs::remove_dir_all(&self.0)?)
+    }
 }
 
 impl Drop for TempDir {
     fn drop(&mut self) {
-        std::fs::remove_dir_all(&self.0).unwrap();
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -84,18 +89,34 @@ fn test_manager() {
     println!("Cgroup path: {:?}", cgroup);
     println!("State path: {:?}", state_dir);
     let manager = Manager::new(state_dir, cgroup.clone()).unwrap();
-    let container_config = ContainerConfig {
-        layers: vec![rootfs],
-        ..Default::default()
-    };
     let mut container = manager
-        .create_container("test1".into(), container_config)
+        .create_container(
+            "test1".into(),
+            ContainerConfig {
+                layers: vec![rootfs],
+                ..Default::default()
+            },
+        )
         .unwrap();
-    let process_config = ProcessConfig {
-        command: vec!["/bin/sh".into(), "-c".into(), "echo 'Hello, World!'".into()],
-        ..Default::default()
-    };
-    let process = container.start(process_config).unwrap();
+    // Run init process.
+    let init_process = container
+        .start(ProcessConfig {
+            command: vec![
+                "/bin/sh".into(),
+                "-c".into(),
+                "echo -n 'Hello, ' && sleep 1".into(),
+            ],
+            ..Default::default()
+        })
+        .unwrap();
+    // Run process.
+    let process = container
+        .execute(ProcessConfig {
+            command: vec!["/bin/sh".into(), "-c".into(), "echo 'World!'".into()],
+            ..Default::default()
+        })
+        .unwrap();
     process.wait(None).unwrap();
+    init_process.wait(None).unwrap();
     container.destroy().unwrap();
 }

@@ -24,6 +24,10 @@ pub(crate) struct CloneArgs {
 }
 
 impl CloneArgs {
+    pub fn flag_parent(&mut self) {
+        self.flags |= nix::libc::CLONE_PARENT as u64;
+    }
+
     pub fn flag_newuser(&mut self) {
         self.flags |= nix::libc::CLONE_NEWUSER as u64;
     }
@@ -57,7 +61,8 @@ impl CloneArgs {
     }
 
     pub fn flag_into_cgroup<T: AsRawFd>(&mut self, cgroup: &T) {
-        self.flags |= nix::libc::CLONE_INTO_CGROUP as u64;
+        // self.flags |= nix::libc::CLONE_INTO_CGROUP as u64;
+        self.flags |= 0x200000000 as u64;
         self.cgroup = cgroup.as_raw_fd() as u64;
     }
 }

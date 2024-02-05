@@ -47,17 +47,20 @@ impl Container {
     }
 
     /// Kills all processes inside container.
-    pub fn kill(&self) -> Result<(), Error> {
+    pub fn kill(&mut self) -> Result<(), Error> {
         let mut file = File::options()
             .write(true)
             .open(self.cgroup_path.join("cgroup.kill"))?;
         file.write_all("1".as_bytes())?;
         drop(file);
+        if let Some(pid) = self.pid.take() {
+            let _ = waitpid(pid, Some(WaitPidFlag::__WALL));
+        }
         Ok(())
     }
 
     /// Releases all associated resources with container.
-    pub fn destroy(self) -> Result<(), Error> {
+    pub fn destroy(mut self) -> Result<(), Error> {
         let kill_err = self.kill();
         let state_err = self.remove_state();
         let cgroup_err = remove_dir(&self.cgroup_path);
@@ -67,21 +70,39 @@ impl Container {
     }
 
     fn remove_state(&self) -> Result<(), Error> {
-        self.run_as_root(|| Ok(remove_dir_all(&self.state_path)?))
+        AsRootTask::start(self, || Ok(remove_dir_all(&self.state_path)?))
     }
 
-    fn run_as_root<Fn: FnOnce() -> Result<(), Error>>(&self, func: Fn) -> Result<(), Error> {
-        let (mut parent_rx, mut parent_tx) = new_pipe()?;
+    pub(super) fn setup_user_namespace(&self, pid: Pid) -> Result<(), Error> {
+        run_newidmap("/bin/newuidmap", pid, &self.uid_map)?;
+        run_newidmap("/bin/newgidmap", pid, &self.gid_map)?;
+        Ok(())
+    }
+}
+
+impl Drop for Container {
+    fn drop(&mut self) {
+        if let Some(pid) = self.pid.take() {
+            let _ = self.kill();
+            let _ = waitpid(pid, Some(WaitPidFlag::__WALL));
+        }
+    }
+}
+
+struct AsRootTask<T> {
+    func: T,
+    rx: File,
+}
+
+impl<T: FnOnce() -> Result<(), Error>> AsRootTask<T> {
+    pub fn start(container: &Container, func: T) -> Result<(), Error> {
+        let (rx, tx) = new_pipe()?;
         let mut clone_args = CloneArgs::default();
         clone_args.flag_newuser();
         match unsafe { clone3(&clone_args) }? {
             CloneResult::Child => {
-                drop(parent_tx);
-                // Await parent process is initialized pid.
-                parent_rx.read_exact(&mut [0; 1])?;
-                drop(parent_rx);
-                // Execute code inside user namespace.
-                match func() {
+                drop(tx);
+                match (AsRootTask { func, rx }).child_main() {
                     Ok(()) => exit(0),
                     Err(err) => {
                         eprintln!("{}", err);
@@ -90,23 +111,31 @@ impl Container {
                 }
             }
             CloneResult::Parent { child } => {
-                drop(parent_rx);
-                // Setup user namespace.
-                self.setup_user_namespace(child)
-                    .map_err(|v| format!("Cannot setup user namespace: {}", v))?;
-                // Unlock child process.
-                parent_tx.write_all(&[0])?;
-                drop(parent_tx);
+                drop(rx);
+                let result = Self::parent_main(container, tx, child);
                 // Wait for exit.
                 waitpid(child, Some(WaitPidFlag::__WALL))?;
+                result
             }
-        };
-        Ok(())
+        }
     }
 
-    pub(super) fn setup_user_namespace(&self, pid: Pid) -> Result<(), Error> {
-        run_newidmap("/bin/newuidmap", pid, &self.uid_map)?;
-        run_newidmap("/bin/newgidmap", pid, &self.gid_map)?;
+    fn child_main(mut self) -> Result<(), Error> {
+        // Await parent process is initialized pid.
+        self.rx.read_exact(&mut [0; 1])?;
+        drop(self.rx);
+        // Execute code inside user namespace.
+        (self.func)()
+    }
+
+    fn parent_main(container: &Container, mut tx: File, pid: Pid) -> Result<(), Error> {
+        // Setup user namespace.
+        container
+            .setup_user_namespace(pid)
+            .map_err(|v| format!("Cannot setup user namespace: {}", v))?;
+        // Unlock child process.
+        tx.write_all(&[0])?;
+        drop(tx);
         Ok(())
     }
 }
