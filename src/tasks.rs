@@ -147,15 +147,6 @@ pub(crate) struct InitTask;
 
 impl InitTask {
     pub fn start(container: &Container, config: ProcessConfig) -> Result<Process, Error> {
-        ignore_kind(
-            create_dir(container.state_path.join("rootfs")),
-            ErrorKind::AlreadyExists,
-        )?;
-        ignore_kind(
-            create_dir(container.state_path.join("diff")),
-            ErrorKind::AlreadyExists,
-        )?;
-        create_dir(container.state_path.join("work"))?;
         let cgroup = File::options()
             .read(true)
             .custom_flags(nix::libc::O_PATH | nix::libc::O_DIRECTORY)
@@ -172,7 +163,9 @@ impl InitTask {
         clone_args.flag_newtime();
         clone_args.flag_newcgroup();
         clone_args.flag_into_cgroup(&cgroup);
-        match unsafe { clone3(&clone_args) }? {
+        match unsafe { clone3(&clone_args) }
+            .map_err(|v| format!("Cannot start init process: {}", v))?
+        {
             CloneResult::Child => {
                 drop(cgroup);
                 drop(parent_tx);

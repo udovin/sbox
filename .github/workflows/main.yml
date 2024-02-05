@@ -21,6 +21,7 @@ jobs:
       run: |
         sudo mkdir /sys/fs/cgroup/sbox-test
         sudo chown $(id -u):$(id -g) /sys/fs/cgroup/sbox-test
+        sudo ls -al /sys/fs/cgroup/sbox-test
     - name: Run test coverage
       run: |
         cargo llvm-cov clean --workspace

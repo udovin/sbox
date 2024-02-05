@@ -68,6 +68,18 @@ impl Manager {
             let _ = remove_dir(cgroup_path);
             return Err(format!("Cannot create state directory: {}", err).into());
         }
+        ignore_kind(
+            create_dir(state_path.join("rootfs")),
+            ErrorKind::AlreadyExists,
+        )
+        .map_err(|v| format!("Cannot create rootfs: {}", v))?;
+        ignore_kind(
+            create_dir(state_path.join("diff")),
+            ErrorKind::AlreadyExists,
+        )
+        .map_err(|v| format!("Cannot create overlay diff: {}", v))?;
+        create_dir(state_path.join("work"))
+            .map_err(|v| format!("Cannot create overlay work: {}", v))?;
         let container = Container {
             state_path,
             cgroup_path,
