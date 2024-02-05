@@ -19,17 +19,17 @@ jobs:
       run: cargo install cargo-llvm-cov
     - name: Prepare cgroup
       run: |
-        sudo mkdir -p /sys/fs/cgroup/sbox-test
-        sudo chown -R $(id -u):$(id -g) /sys/fs/cgroup/sbox-test
+        TEST_CGROUP_PATH="/sys/fs/cgroup$(dirname $(cat /proc/self/cgroup | cut -d ':' -f 3))/sbox-test"
+        sudo mkdir -p $TEST_CGROUP_PATH
+        sudo chown -R $(id -u):$(id -g) $TEST_CGROUP_PATH
     - name: Run test coverage
       run: |
         cargo llvm-cov clean --workspace
         cargo llvm-cov --lcov --output-path ./coverage.lcov
-      env:
-        TEST_CGROUP_PATH: /sys/fs/cgroup/sbox-test
     - name: Remove cgroup
       run: |
-        sudo rmdir /sys/fs/cgroup/sbox-test
+        TEST_CGROUP_PATH="/sys/fs/cgroup$(dirname $(cat /proc/self/cgroup | cut -d ':' -f 3))/sbox-test"
+        sudo rmdir $TEST_CGROUP_PATH
     - name: Upload results to Codecov
       uses: codecov/codecov-action@v3
       env:
