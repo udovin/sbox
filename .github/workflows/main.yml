@@ -19,11 +19,11 @@ jobs:
       run: cargo install cargo-llvm-cov
     - name: Run test coverage
       run: |
-        TEST_CGROUP_PATH="/sys/fs/cgroup$(dirname $(cat /proc/self/cgroup | cut -d ':' -f 3))/sbox-test"
+        TEST_CGROUP_PATH="/sys/fs/cgroup$(cat /proc/self/cgroup | cut -d ':' -f 3)/sbox-test"
         echo $TEST_CGROUP_PATH
-        ls -al $TEST_CGROUP_PATH
         sudo mkdir -p $TEST_CGROUP_PATH
         sudo chown -R $(id -u):$(id -g) $TEST_CGROUP_PATH
+        ls -al $TEST_CGROUP_PATH
         cargo llvm-cov clean --workspace
         cargo llvm-cov --lcov --output-path ./coverage.lcov
         sudo rmdir $TEST_CGROUP_PATH
