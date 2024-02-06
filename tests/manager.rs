@@ -56,7 +56,11 @@ fn get_rootfs() -> Result<Archive<File>, Error> {
         .spawn()
         .unwrap();
     assert!(child.wait().unwrap().success());
-    Ok(Archive::new(File::open("./tests/rootfs.tar")?))
+    let mut rootfs = Archive::new(File::open("./tests/rootfs.tar")?);
+    rootfs.set_preserve_permissions(true);
+    rootfs.set_preserve_ownerships(true);
+    rootfs.set_unpack_xattrs(true);
+    Ok(rootfs)
 }
 
 fn get_cgroup() -> Result<PathBuf, Error> {
