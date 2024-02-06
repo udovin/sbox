@@ -2,7 +2,7 @@ use std::fs::{remove_dir, remove_dir_all, File};
 use std::io::{ErrorKind, Write};
 use std::os::fd::FromRawFd;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::sync::Arc;
 
 use nix::errno::Errno;
 use nix::fcntl::{open, OFlag};
@@ -10,10 +10,7 @@ use nix::mount::{mount, umount2, MntFlags, MsFlags};
 use nix::sys::wait::{waitpid, WaitPidFlag};
 use nix::unistd::fchdir;
 
-use crate::{Error, ExecuteTask, IdMap, InitTask, Pid, Process, ProcessConfig, RootFnTask};
-
-pub type Uid = nix::unistd::Uid;
-pub type Gid = nix::unistd::Gid;
+use crate::{Error, ExecuteTask, InitTask, Pid, Process, ProcessConfig, RootFnTask, UserMapper};
 
 #[derive(Debug, Default)]
 pub struct ContainerConfig {
@@ -24,8 +21,7 @@ pub struct ContainerConfig {
 pub struct Container {
     pub(super) state_path: PathBuf,
     pub(super) cgroup_path: PathBuf,
-    pub(super) uid_map: Vec<IdMap<Uid>>,
-    pub(super) gid_map: Vec<IdMap<Gid>>,
+    pub(super) user_mapper: Arc<dyn UserMapper>,
     pub(super) config: ContainerConfig,
     pub(super) pid: Option<Pid>,
 }
@@ -35,6 +31,12 @@ impl Container {
     pub fn start(&mut self, config: ProcessConfig) -> Result<Process, Error> {
         if self.pid.is_some() {
             return Err("Container already started".into());
+        }
+        if !self.user_mapper.is_uid_mapped(config.uid) {
+            return Err(format!("User {} is not mapped", config.uid).into());
+        }
+        if !self.user_mapper.is_gid_mapped(config.gid) {
+            return Err(format!("User {} is not mapped", config.gid).into());
         }
         let process = InitTask::start(self, config)?;
         self.pid = Some(process.pid());
@@ -81,13 +83,7 @@ impl Container {
 
     fn remove_state(&self) -> Result<(), Error> {
         let func = || Ok(remove_dir_all(&self.state_path)?);
-        RootFnTask::start(&self.uid_map, &self.gid_map, func)
-    }
-
-    pub(super) fn setup_user_namespace(&self, pid: Pid) -> Result<(), Error> {
-        run_newidmap("/bin/newuidmap", pid, &self.uid_map)?;
-        run_newidmap("/bin/newgidmap", pid, &self.gid_map)?;
-        Ok(())
+        RootFnTask::start(self.user_mapper.as_ref(), func)
     }
 }
 
@@ -139,24 +135,4 @@ pub(crate) fn pivot_root(path: &Path) -> Result<(), Error> {
     // Unmount the original root directory which was stacked on top of new root directory.
     umount2("/", MntFlags::MNT_DETACH)?;
     Ok(fchdir(new_root)?)
-}
-
-pub(crate) fn run_newidmap<T: ToString>(
-    binary: &str,
-    pid: Pid,
-    id_map: &[IdMap<T>],
-) -> Result<(), Error> {
-    let mut cmd = Command::new(binary);
-    cmd.arg(pid.as_raw().to_string());
-    for v in id_map {
-        cmd.arg(v.container_id.to_string())
-            .arg(v.host_id.to_string())
-            .arg(v.size.to_string());
-    }
-    let mut child = cmd.spawn()?;
-    let status = child.wait()?;
-    if !status.success() {
-        return Err(format!("{} exited with code {}", binary, status.code().unwrap_or(0)).into());
-    }
-    Ok(())
 }

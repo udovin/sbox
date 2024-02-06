@@ -62,7 +62,7 @@ impl CloneArgs {
 
     pub fn flag_into_cgroup<T: AsRawFd>(&mut self, cgroup: &T) {
         // self.flags |= nix::libc::CLONE_INTO_CGROUP as u64;
-        self.flags |= 0x200000000u64;
+        self.flags |= 0x200000000;
         self.cgroup = cgroup.as_raw_fd() as u64;
     }
 }

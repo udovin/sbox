@@ -1,10 +1,13 @@
 use std::{
+    fs::File,
     io::ErrorKind,
     path::{Path, PathBuf},
 };
 
+use nix::unistd::{getgid, getuid};
 use rand::distributions::{Alphanumeric, DistString};
-use sbox::{ContainerConfig, Error, Manager, ProcessConfig};
+use sbox::{ContainerConfig, Error, Manager, NewIdMap, ProcessConfig};
+use tar::Archive;
 
 pub struct TempDir(PathBuf);
 
@@ -46,14 +49,14 @@ pub fn temp_dir() -> Result<TempDir, Error> {
     Ok(TempDir(path))
 }
 
-fn get_rootfs() -> Result<PathBuf, Error> {
+fn get_rootfs() -> Result<Archive<File>, Error> {
     let mut child = std::process::Command::new("/bin/sh")
         .arg("./get_rootfs.sh")
         .current_dir("./tests")
         .spawn()
         .unwrap();
     assert!(child.wait().unwrap().success());
-    Ok(PathBuf::from("./tests/rootfs").canonicalize()?)
+    Ok(Archive::new(File::open("./tests/rootfs.tar")?))
 }
 
 fn get_cgroup() -> Result<PathBuf, Error> {
@@ -82,18 +85,22 @@ fn get_cgroup() -> Result<PathBuf, Error> {
 #[test]
 fn test_manager() {
     let tmpdir = temp_dir().unwrap();
-    let rootfs = get_rootfs().unwrap();
     let cgroup = get_cgroup().unwrap();
+    let rootfs = get_rootfs().unwrap();
     let state_dir = tmpdir.join("state");
-    println!("Rootfs path: {:?}", rootfs);
+    let rootfs_dir = tmpdir.join("rootfs");
+    println!("Rootfs path: {:?}", rootfs_dir);
     println!("Cgroup path: {:?}", cgroup);
     println!("State path: {:?}", state_dir);
-    let manager = Manager::new(state_dir, cgroup.clone()).unwrap();
+    let user_mapper = NewIdMap::new_root_subid(getuid(), getgid()).unwrap();
+    println!("User mapper: {:?}", &user_mapper);
+    let manager = Manager::new(state_dir, cgroup, user_mapper).unwrap();
+    manager.import_layer(rootfs, &rootfs_dir).unwrap();
     let mut container = manager
         .create_container(
             "test1".into(),
             ContainerConfig {
-                layers: vec![rootfs],
+                layers: vec![rootfs_dir.clone()],
                 ..Default::default()
             },
         )
@@ -120,4 +127,5 @@ fn test_manager() {
     init_process.wait(None).unwrap();
     container.stop().unwrap();
     container.destroy().unwrap();
+    manager.remove_layer(rootfs_dir).unwrap();
 }

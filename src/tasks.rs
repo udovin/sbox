@@ -3,6 +3,7 @@ use std::ffi::CString;
 use std::fs::{create_dir, File};
 use std::io::{ErrorKind, Read, Write};
 use std::marker::PhantomData;
+use std::mem::size_of;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::exit;
@@ -10,11 +11,11 @@ use std::process::exit;
 use nix::mount::{mount, MsFlags};
 use nix::sched::CloneFlags;
 use nix::sys::wait::{waitpid, WaitPidFlag};
-use nix::unistd::{chdir, execvpe, fork, setgid, sethostname, setuid, ForkResult};
+use nix::unistd::{chdir, execvpe, fork, setgid, setgroups, sethostname, setuid, ForkResult};
 
 use crate::{
-    clone3, ignore_kind, new_pipe, pidfd_open, pivot_root, run_newidmap, CloneArgs, CloneResult,
-    Container, Error, Gid, IdMap, Pid, Process, ProcessConfig, Uid,
+    clone3, ignore_kind, new_pipe, pidfd_open, pivot_root, CloneArgs, CloneResult, Container,
+    Error, Pid, Process, ProcessConfig, UserMapper,
 };
 
 pub(crate) struct ExecuteTask;
@@ -55,7 +56,7 @@ impl ExecuteTask {
             .custom_flags(nix::libc::O_PATH | nix::libc::O_DIRECTORY)
             .open(&container.cgroup_path)?;
         // Enter namespaces.
-        let pidfd = pidfd_open(pid).map_err(|v| format!("Cannot read container pidfd: {}", v))?;
+        let pidfd = pidfd_open(pid).map_err(|v| format!("Cannot read container pidfd: {v}"))?;
         let flags = CloneFlags::CLONE_NEWUSER
             | CloneFlags::CLONE_NEWNS
             | CloneFlags::CLONE_NEWPID
@@ -63,7 +64,7 @@ impl ExecuteTask {
             | CloneFlags::CLONE_NEWIPC
             | CloneFlags::CLONE_NEWUTS
             | CloneFlags::from_bits_retain(nix::libc::CLONE_NEWTIME);
-        nix::sched::setns(&pidfd, flags).map_err(|v| format!("Cannot enter container: {}", v))?;
+        nix::sched::setns(&pidfd, flags).map_err(|v| format!("Cannot enter container: {v}"))?;
         let (child_rx, child_tx) = new_pipe()?;
         let mut clone_args = CloneArgs::default();
         clone_args.flag_parent();
@@ -95,12 +96,13 @@ impl ExecuteTask {
     fn child_main(mut tx: File, pidfd: File, config: ProcessConfig) -> Result<Infallible, Error> {
         // Setup cgroup namespace.
         nix::sched::setns(pidfd, CloneFlags::CLONE_NEWCGROUP)
-            .map_err(|v| format!("Cannot enter container: {}", v))?;
+            .map_err(|v| format!("Cannot enter container: {v}"))?;
         // Setup workdir.
         chdir(&config.work_dir)?;
         // Setup user.
-        setuid(config.uid)?;
+        setgroups(&[])?;
         setgid(config.gid)?;
+        setuid(config.uid)?;
         // Prepare exec arguments.
         let filename = CString::new(config.command[0].as_bytes())?;
         let argv: Vec<_> = config
@@ -164,7 +166,7 @@ impl InitTask {
         clone_args.flag_newcgroup();
         clone_args.flag_into_cgroup(&cgroup);
         match unsafe { clone3(&clone_args) }
-            .map_err(|v| format!("Cannot start init process: {}", v))?
+            .map_err(|v| format!("Cannot start init process: {v}"))?
         {
             CloneResult::Child => {
                 drop(cgroup);
@@ -200,15 +202,16 @@ impl InitTask {
         drop(rx);
         // Setup mount namespace.
         Self::setup_mount_namespace(container)
-            .map_err(|v| format!("Cannot setup mount namespace: {}", v))?;
+            .map_err(|v| format!("Cannot setup mount namespace: {v}"))?;
         // Setup uts namespace.
         Self::setup_uts_namespace(container)
-            .map_err(|v| format!("Cannot setup UTS namespace: {}", v))?;
+            .map_err(|v| format!("Cannot setup UTS namespace: {v}"))?;
         // Setup workdir.
         chdir(&config.work_dir)?;
         // Setup user.
-        setuid(config.uid)?;
+        setgroups(&[])?;
         setgid(config.gid)?;
+        setuid(config.uid)?;
         // Prepare exec arguments.
         let filename = CString::new(config.command[0].as_bytes())?;
         let argv: Vec<_> = config
@@ -236,8 +239,9 @@ impl InitTask {
         container: &Container,
     ) -> Result<(), Error> {
         container
-            .setup_user_namespace(pid)
-            .map_err(|v| format!("Cannot setup user namespace: {}", v))?;
+            .user_mapper
+            .run_map_user(pid)
+            .map_err(|v| format!("Cannot setup user namespace: {v}"))?;
         // Unlock child process.
         tx.write_all(&[0])?;
         drop(tx);
@@ -355,20 +359,17 @@ impl InitTask {
             .iter()
             .map(|v| v.as_os_str().to_str())
             .try_collect::<Vec<_>>()
-            .ok_or(format!("Invalid overlay lowerdir: {:?}", layers))?
+            .ok_or(format!("Invalid overlay lowerdir: {layers:?}"))?
             .join(":");
         let upperdir = diff
             .as_os_str()
             .to_str()
-            .ok_or(format!("Invalid overlay upperdir: {:?}", diff))?;
+            .ok_or(format!("Invalid overlay upperdir: {diff:?}"))?;
         let workdir = work
             .as_os_str()
             .to_str()
-            .ok_or(format!("Invalid overlay workdir: {:?}", work))?;
-        let mount_data = format!(
-            "lowerdir={},upperdir={},workdir={}",
-            lowerdir, upperdir, workdir,
-        );
+            .ok_or(format!("Invalid overlay workdir: {work:?}"))?;
+        let mount_data = format!("lowerdir={lowerdir},upperdir={upperdir},workdir={workdir}");
         Ok(mount(
             "overlay".into(),
             rootfs,
@@ -395,22 +396,25 @@ impl InitTask {
 pub(crate) struct RootFnTask<T>(PhantomData<T>);
 
 impl<T: FnOnce() -> Result<(), Error>> RootFnTask<T> {
-    pub fn start(uid_map: &[IdMap<Uid>], gid_map: &[IdMap<Gid>], func: T) -> Result<(), Error> {
-        let (rx, tx) = new_pipe()?;
+    pub fn start(user_mapper: &dyn UserMapper, func: T) -> Result<(), Error> {
+        let (parent_rx, parent_tx) = new_pipe()?;
+        let (child_rx, child_tx) = new_pipe()?;
         let mut clone_args = CloneArgs::default();
         clone_args.flag_newuser();
         match unsafe { clone3(&clone_args) }? {
             CloneResult::Child => {
-                drop(tx);
-                if let Err(err) = Self::child_main(rx, func) {
+                drop(parent_tx);
+                drop(child_rx);
+                if let Err(err) = Self::child_main(parent_rx, child_tx, func) {
                     eprintln!("{}", err);
                 }
                 // Always exit with an error because this code is unreachable during normal execution.
                 exit(1)
             }
             CloneResult::Parent { child } => {
-                drop(rx);
-                let result = Self::parent_main(tx, child, uid_map, gid_map);
+                drop(parent_rx);
+                drop(child_tx);
+                let result = Self::parent_main(child_rx, parent_tx, child, user_mapper);
                 // Wait for exit.
                 waitpid(child, Some(WaitPidFlag::__WALL))?;
                 result
@@ -418,28 +422,63 @@ impl<T: FnOnce() -> Result<(), Error>> RootFnTask<T> {
         }
     }
 
-    fn child_main(mut rx: File, func: T) -> Result<Infallible, Error> {
+    fn child_main(rx: impl Read, tx: impl Write, func: T) -> Result<Infallible, Error> {
         // Await parent process is initialized pid.
-        rx.read_exact(&mut [0; 1])?;
-        drop(rx);
+        read_ok(rx)?;
         // Execute code inside user namespace.
-        func()?;
+        write_result(tx, func())?;
         // Exit with success.
         exit(0)
     }
 
     fn parent_main(
-        mut tx: File,
+        rx: impl Read,
+        tx: impl Write,
         pid: Pid,
-        uid_map: &[IdMap<Uid>],
-        gid_map: &[IdMap<Gid>],
+        user_mapper: &dyn UserMapper,
     ) -> Result<(), Error> {
         // Setup user namespace.
-        run_newidmap("/bin/newuidmap", pid, uid_map)?;
-        run_newidmap("/bin/newgidmap", pid, gid_map)?;
+        user_mapper.run_map_user(pid)?;
         // Unlock child process.
-        tx.write_all(&[0])?;
-        drop(tx);
-        Ok(())
+        write_ok(tx)?;
+        // Read result from child.
+        Ok(read_result(rx)?.map_err(|v| format!("Cannot run as root: {v}"))?)
     }
+}
+
+fn write_result(mut w: impl Write, err: Result<(), Error>) -> Result<(), Error> {
+    match err {
+        Ok(()) => Ok(w.write_all(&u8::to_le_bytes(0))?),
+        Err(err) => {
+            w.write_all(&u8::to_le_bytes(1))?;
+            let msg = err.to_string();
+            w.write_all(&usize::to_le_bytes(msg.as_bytes().len()))?;
+            Ok(w.write_all(msg.as_bytes())?)
+        }
+    }
+}
+
+fn read_result(mut r: impl Read) -> Result<Result<(), Error>, Error> {
+    let mut buf = [0; size_of::<u8>()];
+    r.read_exact(&mut buf)?;
+    match u8::from_le_bytes(buf) {
+        0 => Ok(Ok(())),
+        1 => {
+            let mut buf = [0; size_of::<usize>()];
+            r.read_exact(&mut buf)?;
+            let len = usize::from_le_bytes(buf);
+            let mut buf = vec![0; len];
+            r.read_exact(&mut buf)?;
+            Ok(Err(String::from_utf8(buf)?.into()))
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn read_ok(mut r: impl Read) -> Result<(), Error> {
+    Ok(r.read_exact(&mut [0; 1])?)
+}
+
+fn write_ok(mut w: impl Write) -> Result<(), Error> {
+    Ok(w.write_all(&[0])?)
 }

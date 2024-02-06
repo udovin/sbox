@@ -10,6 +10,7 @@ categories = ["virtualization"]
 
 [dependencies]
 nix = { version = "0.27.1", features = ["signal", "user", "hostname", "fs", "mount", "sched"] }
+tar = "0.4.40"
 
 [dev-dependencies]
 rand = "0.8.5"

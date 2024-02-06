@@ -1,58 +1,60 @@
-use std::fs::{create_dir, create_dir_all, remove_dir};
-use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::fs::{create_dir, create_dir_all, remove_dir, remove_dir_all};
+use std::io::{ErrorKind, Read};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use nix::unistd::{getgid, getuid};
+use nix::unistd::Uid;
+use tar::Archive;
 
-use crate::{ignore_kind, Container, ContainerConfig, Gid, Uid};
+use crate::{ignore_kind, Container, ContainerConfig, Gid, RootFnTask, UserMapper};
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
-
-#[derive(Debug, Clone)]
-pub struct IdMap<T> {
-    pub container_id: T,
-    pub host_id: T,
-    pub size: u32,
-}
-
-impl<T: From<nix::libc::uid_t>> IdMap<T> {
-    pub(crate) fn new_container_root(host_id: T) -> Self {
-        Self {
-            host_id,
-            container_id: 0.into(),
-            size: 1,
-        }
-    }
-}
 
 pub struct Manager {
     state_path: PathBuf,
     cgroup_path: PathBuf,
-    uid_map: Vec<IdMap<Uid>>,
-    gid_map: Vec<IdMap<Gid>>,
+    user_mapper: Arc<dyn UserMapper>,
 }
 
 impl Manager {
-    pub fn new(
-        state_path: impl Into<PathBuf>,
-        cgroup_path: impl Into<PathBuf>,
-    ) -> Result<Self, Error> {
+    pub fn new<SP, CP, UM>(state_path: SP, cgroup_path: CP, user_mapper: UM) -> Result<Self, Error>
+    where
+        SP: Into<PathBuf>,
+        CP: Into<PathBuf>,
+        UM: UserMapper + 'static,
+    {
         let state_path = state_path.into();
         let cgroup_path = cgroup_path.into();
         assert!(cgroup_path.starts_with("/sys/fs/cgroup/"));
         ignore_kind(create_dir(&cgroup_path), ErrorKind::AlreadyExists)
             .map_err(|v| format!("Cannot create cgroup: {}", v))?;
         create_dir_all(&state_path).map_err(|v| format!("Cannot create state directory: {}", v))?;
+        if user_mapper.uid_count() > 1 && !user_mapper.is_uid_mapped(Uid::from_raw(0)) {
+            return Err("No mapping for root user".into());
+        }
+        if user_mapper.gid_count() > 1 && !user_mapper.is_gid_mapped(Gid::from_raw(0)) {
+            return Err("No mapping for root group".into());
+        }
         Ok(Self {
             state_path,
             cgroup_path,
-            uid_map: vec![IdMap::new_container_root(getuid())],
-            gid_map: vec![IdMap::new_container_root(getgid())],
+            user_mapper: Arc::new(user_mapper),
         })
     }
 
-    pub fn start_init_process() {
-        todo!()
+    pub fn import_layer<R, P>(&self, mut archive: Archive<R>, path: P) -> Result<(), Error>
+    where
+        R: Read,
+        P: AsRef<Path>,
+    {
+        RootFnTask::start(self.user_mapper.as_ref(), move || Ok(archive.unpack(path)?))
+    }
+
+    pub fn remove_layer<P>(&self, path: P) -> Result<(), Error>
+    where
+        P: AsRef<Path>,
+    {
+        RootFnTask::start(self.user_mapper.as_ref(), move || Ok(remove_dir_all(path)?))
     }
 
     pub fn create_container(
@@ -83,8 +85,7 @@ impl Manager {
         let container = Container {
             state_path,
             cgroup_path,
-            uid_map: self.uid_map.clone(),
-            gid_map: self.gid_map.clone(),
+            user_mapper: self.user_mapper.clone(),
             config,
             pid: None,
         };
