@@ -1,7 +1,7 @@
 # sbox
 
 [![crates.io](https://img.shields.io/crates/v/sbox.svg)](https://crates.io/crates/sbox)
-[![codecov](https://codecov.io/gh/udovin/sbox-rs/graph/badge.svg?token=1e6dCU26Nq)](https://codecov.io/gh/udovin/sbox)
+[![codecov](https://codecov.io/gh/udovin/sbox/graph/badge.svg?token=rSCoZyJyKV)](https://codecov.io/gh/udovin/sbox)
 
 Tiny Linux containers implementation.
 
