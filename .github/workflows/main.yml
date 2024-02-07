@@ -6,7 +6,6 @@ jobs:
   coverage:
     name: Run test coverage
     runs-on: ubuntu-22.04
-
     steps:
     - name: Check out code
       uses: actions/checkout@v3

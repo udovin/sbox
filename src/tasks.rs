@@ -11,7 +11,7 @@ use std::process::exit;
 use nix::mount::{mount, MsFlags};
 use nix::sched::CloneFlags;
 use nix::sys::wait::{waitpid, WaitPidFlag};
-use nix::unistd::{chdir, execvpe, fork, setgid, setgroups, sethostname, setuid, ForkResult};
+use nix::unistd::{chdir, execvpe, fork, sethostname, ForkResult};
 
 use crate::{
     clone3, ignore_kind, new_pipe, pidfd_open, pivot_root, CloneArgs, CloneResult, Container,
@@ -74,7 +74,7 @@ impl ExecuteTask {
                 drop(cgroup);
                 drop(tx);
                 drop(child_rx);
-                if let Err(err) = Self::child_main(child_tx, pidfd, config) {
+                if let Err(err) = Self::child_main(child_tx, pidfd, container, config) {
                     eprintln!("{}", err);
                 }
                 // Always exit with an error because this code is unreachable during normal execution.
@@ -93,28 +93,27 @@ impl ExecuteTask {
         }
     }
 
-    fn child_main(mut tx: File, pidfd: File, config: ProcessConfig) -> Result<Infallible, Error> {
+    fn child_main(
+        mut tx: File,
+        pidfd: File,
+        container: &Container,
+        config: ProcessConfig,
+    ) -> Result<Infallible, Error> {
         // Setup cgroup namespace.
         nix::sched::setns(pidfd, CloneFlags::CLONE_NEWCGROUP)
             .map_err(|v| format!("Cannot enter container: {v}"))?;
         // Setup workdir.
         chdir(&config.work_dir)?;
         // Setup user.
-        setgroups(&[])?;
-        setgid(config.gid)?;
-        setuid(config.uid)?;
+        container.user_mapper.set_user(config.uid, config.gid)?;
         // Prepare exec arguments.
         let filename = CString::new(config.command[0].as_bytes())?;
-        let argv: Vec<_> = config
-            .command
-            .iter()
-            .map(|v| CString::new(v.as_bytes()))
-            .try_collect()?;
-        let envp: Vec<_> = config
-            .environ
-            .iter()
-            .map(|v| CString::new(v.as_bytes()))
-            .try_collect()?;
+        let argv = Result::<Vec<_>, _>::from_iter(
+            config.command.iter().map(|v| CString::new(v.as_bytes())),
+        )?;
+        let envp = Result::<Vec<_>, _>::from_iter(
+            config.environ.iter().map(|v| CString::new(v.as_bytes())),
+        )?;
         // Unlock parent process.
         tx.write_all(&[0])?;
         drop(tx);
@@ -209,21 +208,15 @@ impl InitTask {
         // Setup workdir.
         chdir(&config.work_dir)?;
         // Setup user.
-        setgroups(&[])?;
-        setgid(config.gid)?;
-        setuid(config.uid)?;
+        container.user_mapper.set_user(config.uid, config.gid)?;
         // Prepare exec arguments.
         let filename = CString::new(config.command[0].as_bytes())?;
-        let argv: Vec<_> = config
-            .command
-            .iter()
-            .map(|v| CString::new(v.as_bytes()))
-            .try_collect()?;
-        let envp: Vec<_> = config
-            .environ
-            .iter()
-            .map(|v| CString::new(v.as_bytes()))
-            .try_collect()?;
+        let argv = Result::<Vec<_>, _>::from_iter(
+            config.command.iter().map(|v| CString::new(v.as_bytes())),
+        )?;
+        let envp = Result::<Vec<_>, _>::from_iter(
+            config.environ.iter().map(|v| CString::new(v.as_bytes())),
+        )?;
         // Unlock parent process.
         tx.write_all(&[0])?;
         drop(tx);
@@ -355,10 +348,7 @@ impl InitTask {
         work: &Path,
         rootfs: &Path,
     ) -> Result<(), Error> {
-        let lowerdir = layers
-            .iter()
-            .map(|v| v.as_os_str().to_str())
-            .try_collect::<Vec<_>>()
+        let lowerdir = Option::<Vec<_>>::from_iter(layers.iter().map(|v| v.as_os_str().to_str()))
             .ok_or(format!("Invalid overlay lowerdir: {layers:?}"))?
             .join(":");
         let upperdir = diff

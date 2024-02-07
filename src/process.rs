@@ -1,4 +1,3 @@
-use std::os::fd::RawFd;
 use std::path::PathBuf;
 
 use nix::sys::signal::kill;
@@ -14,9 +13,6 @@ pub struct ProcessConfig {
     pub command: Vec<String>,
     pub environ: Vec<String>,
     pub work_dir: PathBuf,
-    pub stdin: Option<RawFd>,
-    pub stdout: Option<RawFd>,
-    pub stderr: Option<RawFd>,
     pub uid: Uid,
     pub gid: Gid,
 }
@@ -27,9 +23,6 @@ impl Default for ProcessConfig {
             command: Default::default(),
             environ: Default::default(),
             work_dir: "/".into(),
-            stdin: None,
-            stdout: None,
-            stderr: None,
             uid: Uid::from_raw(0),
             gid: Gid::from_raw(0),
         }

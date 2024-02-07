@@ -1,24 +1,30 @@
+use std::ffi::CString;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::process::Command;
 use std::str::FromStr;
 
 use nix::libc::uid_t;
-use nix::unistd::{getgid, getuid, User};
+use nix::unistd::{getgid, getgrouplist, getuid, setgid, setgroups, setuid, User};
 
 use crate::{Error, Pid};
 
 pub type Uid = nix::unistd::Uid;
 pub type Gid = nix::unistd::Gid;
 
+/// Represents mapping for IDs from host namespace to container namespace.
 #[derive(Clone, Debug)]
 pub struct IdMap<T> {
+    /// First ID in container namespace.
     pub container_id: T,
+    /// First ID in host namespace.
     pub host_id: T,
+    /// Amount of mapped IDs.
     pub size: u32,
 }
 
 impl<T: From<uid_t>> IdMap<T> {
+    /// Maps specified host ID as root (ID = 0) in container namespace.
     pub fn new_root(host_id: T) -> Self {
         Self {
             host_id,
@@ -31,6 +37,9 @@ impl<T: From<uid_t>> IdMap<T> {
 pub trait UserMapper {
     fn run_map_user(&self, pid: Pid) -> Result<(), Error>;
 
+    // Set user and group of current process.
+    fn set_user(&self, uid: Uid, gid: Gid) -> Result<(), Error>;
+
     fn is_uid_mapped(&self, id: Uid) -> bool;
 
     fn is_gid_mapped(&self, id: Gid) -> bool;
@@ -40,6 +49,11 @@ pub trait UserMapper {
     fn gid_count(&self) -> u32;
 }
 
+/// Represents user mapper implemented using new{u,g}idmap.
+///
+/// Uses new{u,g}idmap binaries from following paths:
+///   * `/bin/newuidmap`
+///   * `/bin/newgidmap`
 #[derive(Clone, Debug)]
 pub struct NewIdMap {
     pub uid_map: Vec<IdMap<Uid>>,
@@ -49,7 +63,11 @@ pub struct NewIdMap {
 }
 
 impl NewIdMap {
-    // Maps uid and gid as container root.
+    /// Maps uid and gid as container root.
+    ///
+    /// Uses new{u,g}idmap binaries from following paths:
+    ///   * `/bin/newuidmap`
+    ///   * `/bin/newgidmap`
     pub fn new_root(uid: Uid, gid: Gid) -> Self {
         Self {
             uid_map: vec![IdMap::new_root(uid)],
@@ -59,7 +77,11 @@ impl NewIdMap {
         }
     }
 
-    // Maps uid and gid as container root, subuid and subgid as other users.
+    /// Maps uid and gid as container root, subuid and subgid as other users.
+    ///
+    /// Uses new{u,g}idmap binaries from following paths:
+    ///   * `/bin/newuidmap`
+    ///   * `/bin/newgidmap`
     pub fn new_root_subid(uid: Uid, gid: Gid) -> Result<Self, Error> {
         let user = match User::from_uid(uid)? {
             Some(v) => v,
@@ -143,6 +165,7 @@ impl NewIdMap {
     }
 }
 
+/// Creates user mapper for current process uid and gid.
 impl Default for NewIdMap {
     fn default() -> Self {
         Self::new_root(getuid(), getgid())
@@ -150,24 +173,40 @@ impl Default for NewIdMap {
 }
 
 impl UserMapper for NewIdMap {
+    /// Runs mapping for new user namespace initialized by specified process.
     fn run_map_user(&self, pid: Pid) -> Result<(), Error> {
         Self::run_id_map(&self.uid_map, &self.uid_binary, pid)?;
         Self::run_id_map(&self.gid_map, &self.gid_binary, pid)?;
         Ok(())
     }
 
+    /// Sets user ID and group ID for current process in user namespace.
+    fn set_user(&self, uid: Uid, gid: Gid) -> Result<(), Error> {
+        let groups = match User::from_uid(uid)? {
+            Some(user) => getgrouplist(&CString::new(user.name.as_bytes())?, gid)?,
+            None => Vec::new(),
+        };
+        setgroups(&groups)?;
+        setgid(gid)?;
+        Ok(setuid(uid)?)
+    }
+
+    /// Verifies that specified user ID is represented in container.
     fn is_uid_mapped(&self, uid: Uid) -> bool {
         Self::is_mapped(&self.uid_map, uid)
     }
 
+    /// Verifies that specified group ID is represented in container.
     fn is_gid_mapped(&self, gid: Gid) -> bool {
         Self::is_mapped(&self.gid_map, gid)
     }
 
+    /// Calculates amount of mapped user IDs.
     fn uid_count(&self) -> u32 {
         self.uid_map.iter().fold(0, |acc, x| acc + x.size)
     }
 
+    /// Calculates amount of mapped group IDs.
     fn gid_count(&self) -> u32 {
         self.gid_map.iter().fold(0, |acc, x| acc + x.size)
     }

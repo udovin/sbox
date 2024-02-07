@@ -9,8 +9,10 @@ Tiny Linux containers implementation.
 
 ```rust
 fn main() {
+    // Create user namespace mapper for current user with subuids and subgids.
+    let user_mapper = NewIdMap::new_root_subid(getuid(), getgid()).unwrap();
     // Create container manager.
-    let manager = Manager::new("/tmp/sbox", "/sys/fs/cgroup/sbox").unwrap();
+    let manager = Manager::new("/tmp/sbox", "/sys/fs/cgroup/sbox", user_mapper).unwrap();
     // Create container.
     let mut container = manager
         .create_container(

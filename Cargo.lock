@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "sbox"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "nix",
  "rand",

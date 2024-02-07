@@ -1,5 +1,3 @@
-#![feature(iterator_try_collect)]
-
 mod container;
 mod manager;
 mod process;
