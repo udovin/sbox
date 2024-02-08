@@ -34,18 +34,24 @@ impl<T: From<uid_t>> IdMap<T> {
     }
 }
 
+/// Represents mapper for user IDs and group IDs in container namespace.
 pub trait UserMapper {
+    /// Runs mapping for new user namespace initialized by specified process.
     fn run_map_user(&self, pid: Pid) -> Result<(), Error>;
 
-    // Set user and group of current process.
+    /// Sets user ID and group ID for current process in user namespace.
     fn set_user(&self, uid: Uid, gid: Gid) -> Result<(), Error>;
 
+    /// Verifies that specified user ID is represented in container.
     fn is_uid_mapped(&self, id: Uid) -> bool;
 
+    /// Verifies that specified group ID is represented in container.
     fn is_gid_mapped(&self, id: Gid) -> bool;
 
+    /// Calculates amount of mapped user IDs.
     fn uid_count(&self) -> u32;
 
+    /// Calculates amount of mapped group IDs.
     fn gid_count(&self) -> u32;
 }
 

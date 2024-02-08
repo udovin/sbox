@@ -1,6 +1,5 @@
 use std::fs::{remove_dir, remove_dir_all, File};
 use std::io::{ErrorKind, Write};
-use std::os::fd::FromRawFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -107,13 +106,6 @@ pub(crate) fn ignore_kind(result: std::io::Result<()>, kind: ErrorKind) -> std::
             }
         }
     }
-}
-
-pub(crate) fn new_pipe() -> Result<(File, File), Error> {
-    let (rx, tx) = nix::unistd::pipe()?;
-    let rx = unsafe { File::from_raw_fd(rx) };
-    let tx = unsafe { File::from_raw_fd(tx) };
-    Ok((rx, tx))
 }
 
 pub(crate) fn pivot_root(path: &Path) -> Result<(), Error> {

@@ -1,9 +1,10 @@
-use std::{
-    fs::File,
-    os::fd::{AsRawFd, FromRawFd, RawFd},
-};
+use std::fs::File;
+use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 
 use nix::{errno::Errno, libc::syscall};
+
+use crate::Error;
 
 pub type Pid = nix::unistd::Pid;
 
@@ -95,4 +96,28 @@ pub(crate) fn pidfd_open(pid: Pid) -> Result<File, Errno> {
         )
     };
     Errno::result(res).map(|v| unsafe { File::from_raw_fd(v as RawFd) })
+}
+
+pub(crate) struct Pipe {
+    rx: File,
+    tx: File,
+}
+
+impl Pipe {
+    pub fn rx(self) -> impl Read {
+        drop(self.tx);
+        self.rx
+    }
+
+    pub fn tx(self) -> impl Write {
+        drop(self.rx);
+        self.tx
+    }
+}
+
+pub(crate) fn new_pipe() -> Result<Pipe, Error> {
+    let (rx, tx) = nix::unistd::pipe()?;
+    let rx = unsafe { File::from_raw_fd(rx) };
+    let tx = unsafe { File::from_raw_fd(tx) };
+    Ok(Pipe { rx, tx })
 }
