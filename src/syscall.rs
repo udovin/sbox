@@ -118,8 +118,8 @@ impl Pipe {
 
 pub(crate) fn new_pipe() -> Result<Pipe, Error> {
     let (rx, tx) = nix::unistd::pipe()?;
-    let rx = unsafe { File::from_raw_fd(rx) };
-    let tx = unsafe { File::from_raw_fd(tx) };
+    let rx = File::from(rx);
+    let tx = File::from(tx);
     Ok(Pipe { rx, tx })
 }
 
