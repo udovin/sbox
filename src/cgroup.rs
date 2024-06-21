@@ -11,6 +11,8 @@ pub struct Cgroup {
     path: PathBuf,
 }
 
+const PROC_CGROUP: &str = "/proc/self/cgroup";
+const CGROUP_MOUNT: &str = "/sys/fs/cgroup";
 const CGROUP_PROCS: &str = "cgroup.procs";
 
 impl Cgroup {
@@ -18,6 +20,34 @@ impl Cgroup {
         let root_path = root_path.into();
         let path = root_path.join(cgroup);
         Ok(Self { root_path, path })
+    }
+
+    pub fn current() -> Result<Self, Error> {
+        for line in String::from_utf8(std::fs::read(PROC_CGROUP)?)?.split('\n') {
+            let parts: Vec<_> = line.split(':').collect();
+            if let Some(v) = parts.get(1) {
+                if !v.is_empty() {
+                    continue;
+                }
+            }
+            let cgroup = parts
+                .get(2)
+                .ok_or("Expected cgroup path")?
+                .trim_start_matches('/');
+            return Cgroup::new(CGROUP_MOUNT, cgroup);
+        }
+        Err("Cannot resolve cgroup".into())
+    }
+
+    pub fn parent(&self) -> Option<Self> {
+        let path = self.path.parent()?;
+        if path.starts_with(&self.root_path) {
+            let root_path = self.root_path.clone();
+            let path = path.to_owned();
+            Some(Self { root_path, path })
+        } else {
+            None
+        }
     }
 
     pub fn child(&self, cgroup: impl AsRef<Path>) -> Result<Self, Error> {

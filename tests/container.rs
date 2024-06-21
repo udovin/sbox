@@ -63,33 +63,20 @@ fn get_rootfs() -> Result<Archive<File>, Error> {
     Ok(rootfs)
 }
 
-fn get_cgroup() -> Result<PathBuf, Error> {
+fn get_cgroup() -> Result<Cgroup, Error> {
     if let Ok(v) = std::env::var("TEST_CGROUP_PATH") {
-        return Ok(v.into());
+        return Cgroup::new("/sys/fs/cgroup", v.strip_prefix("/sys/fs/cgroup").unwrap());
     }
-    for line in String::from_utf8(std::fs::read("/proc/self/cgroup")?)?.split('\n') {
-        let parts: Vec<_> = line.split(':').collect();
-        if let Some(v) = parts.get(1) {
-            if !v.is_empty() {
-                continue;
-            }
-        }
-        return Ok(PathBuf::from("/sys/fs/cgroup")
-            .join(
-                parts
-                    .get(2)
-                    .ok_or("expected cgroup path")?
-                    .trim_start_matches('/'),
-            )
-            .join("sbox-test"));
-    }
-    todo!()
+    Ok(Cgroup::current()?
+        .parent()
+        .ok_or("Current process cannot be in root cgroup")?)
 }
 
 #[test]
 fn test_container() {
     let tmpdir = temp_dir().unwrap();
-    let cgroup = get_cgroup().unwrap();
+    let cgroup = get_cgroup().unwrap().child("sbox-test").unwrap();
+    cgroup.create().unwrap();
     let state_dir = tmpdir.join("state");
     let rootfs_dir = tmpdir.join("rootfs");
     let user_mapper = NewIdMap::new_root_subid(Uid::current(), Gid::current()).unwrap();
@@ -104,11 +91,6 @@ fn test_container() {
     create_dir(&state_dir).unwrap();
     create_dir(state_dir.join("upper")).unwrap();
     create_dir(state_dir.join("work")).unwrap();
-    let cgroup = Cgroup::new(
-        "/sys/fs/cgroup",
-        cgroup.strip_prefix("/sys/fs/cgroup").unwrap(),
-    )
-    .unwrap();
     let container = Container::options()
         .cgroup(cgroup.clone())
         .add_mount(OverlayMount::new(
