@@ -228,8 +228,8 @@ pub fn run_as_user<
     Fn: FnOnce() -> Result<(), Error> + UnwindSafe,
 >(
     user_mapper: &T,
-    uid: Uid,
-    gid: Gid,
+    uid: impl Into<Uid> + UnwindSafe,
+    gid: impl Into<Gid> + UnwindSafe,
     func: Fn,
 ) -> Result<(), Error> {
     let pipe = new_pipe()?;
@@ -243,8 +243,8 @@ pub fn run_as_user<
                 let tx = child_pipe.tx();
                 exit_child(move || -> Result<(), Error> {
                     read_ok(rx)?;
-                    user_mapper.set_user(uid, gid)?;
-                    write_result(tx, func())
+                    user_mapper.set_user(uid.into(), gid.into())?;
+                    write_result(tx, func())?
                 }())
             });
             unsafe { nix::libc::_exit(2) }
@@ -270,5 +270,5 @@ pub fn run_as_root<
     user_mapper: &T,
     func: Fn,
 ) -> Result<(), Error> {
-    run_as_user(user_mapper, Uid::from(0), Gid::from(0), func)
+    run_as_user(user_mapper, 0, 0, func)
 }

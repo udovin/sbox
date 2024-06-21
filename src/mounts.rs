@@ -120,7 +120,11 @@ impl Mount for BaseMounts {
             "cgroup",
             "/sys/fs/cgroup",
             "cgroup2",
-            MsFlags::MS_NOEXEC | MsFlags::MS_NOSUID | MsFlags::MS_NODEV | MsFlags::MS_RELATIME,
+            MsFlags::MS_NOEXEC
+                | MsFlags::MS_NOSUID
+                | MsFlags::MS_NODEV
+                | MsFlags::MS_RELATIME
+                | MsFlags::MS_RDONLY,
             None,
         )?;
         Ok(())

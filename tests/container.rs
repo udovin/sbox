@@ -102,7 +102,7 @@ fn test_container() {
     println!("Cgroup path: {:?}", cgroup);
     println!("State path: {:?}", state_dir);
     create_dir(&state_dir).unwrap();
-    create_dir(state_dir.join("diff")).unwrap();
+    create_dir(state_dir.join("upper")).unwrap();
     create_dir(state_dir.join("work")).unwrap();
     let cgroup = Cgroup::new(
         "/sys/fs/cgroup",
@@ -113,11 +113,11 @@ fn test_container() {
         .cgroup(cgroup.clone())
         .add_mount(OverlayMount::new(
             vec![rootfs_dir.clone()],
-            state_dir.join("diff"),
+            state_dir.join("upper"),
             state_dir.join("work"),
         ))
         .add_mount(BaseMounts::new())
-        .rootfs(rootfs_dir)
+        .rootfs(state_dir.join("rootfs"))
         .user_mapper(user_mapper.clone())
         .create()
         .unwrap();
@@ -125,32 +125,35 @@ fn test_container() {
         .command(vec![
             "/bin/sh".into(),
             "-c".into(),
-            "sleep 2 && echo 'Exited!'".into(),
+            "id && cat /proc/self/cgroup && ls -al /proc/self/ns && sleep 2 && echo 'Init exited'"
+                .into(),
         ])
         .cgroup("init")
         .start(&container)
         .unwrap();
-    let mut new_user = Process::options()
+    Process::options()
         .command(vec![
             "/bin/sh".into(),
             "-c".into(),
-            "adduser -D -u1000 admin".into(),
+            "id && cat /proc/self/cgroup && ls -al /proc/self/ns && adduser -D -u1000 user && echo 'System exited'".into(),
         ])
         .cgroup("system")
         .start(&container, &init_process)
+        .unwrap()
+        .wait()
         .unwrap();
-    new_user.wait().unwrap();
-    let mut sleep_process = Process::options()
+    Process::options()
         .command(vec![
             "/bin/sh".into(),
             "-c".into(),
-            "echo 'Hello, World!' && id && cat /proc/self/cgroup".into(),
+            "id && cat /proc/self/cgroup && ls -al /proc/self/ns && echo 'User exited'".into(),
         ])
         .cgroup("user")
         .user(1000, 1000)
         .start(&container, &init_process)
+        .unwrap()
+        .wait()
         .unwrap();
-    sleep_process.wait().unwrap();
     init_process.wait().unwrap();
     cgroup.child("init").unwrap().remove().unwrap();
     cgroup.child("system").unwrap().remove().unwrap();

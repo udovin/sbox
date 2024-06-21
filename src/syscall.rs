@@ -140,14 +140,21 @@ pub(super) fn read_result(mut rx: impl Read) -> Result<Result<(), Error>, Error>
     }
 }
 
-pub(super) fn write_result(mut tx: impl Write, result: Result<(), Error>) -> Result<(), Error> {
+pub(super) fn write_result(
+    mut tx: impl Write,
+    result: Result<(), Error>,
+) -> Result<Result<(), Error>, Error> {
     match result {
-        Ok(()) => Ok(tx.write_all(&u8::to_le_bytes(0))?),
+        Ok(()) => {
+            tx.write_all(&u8::to_le_bytes(0))?;
+            Ok(Ok(()))
+        }
         Err(err) => {
             tx.write_all(&u8::to_le_bytes(1))?;
             let msg = err.to_string();
             tx.write_all(&usize::to_le_bytes(msg.as_bytes().len()))?;
-            Ok(tx.write_all(msg.as_bytes())?)
+            tx.write_all(msg.as_bytes())?;
+            Ok(Err(err))
         }
     }
 }

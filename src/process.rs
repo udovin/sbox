@@ -115,7 +115,7 @@ impl InitProcessOptions {
                                 container.user_mapper.set_user(uid, gid)?;
                                 Ok(())
                             }(),
-                        )?;
+                        )??;
                         // Prepare exec arguments.
                         let filename = CString::new(command[0].as_bytes())?;
                         let argv = Result::<Vec<_>, _>::from_iter(
@@ -159,12 +159,16 @@ impl InitProcess {
         Self { pid }
     }
 
-    pub fn options() -> InitProcessOptions {
-        InitProcessOptions::new()
+    pub fn as_pid(&self) -> Pid {
+        self.pid
     }
 
     pub fn wait(&mut self) -> Result<WaitStatus, Error> {
         Ok(waitpid(self.pid, Some(WaitPidFlag::__WALL))?)
+    }
+
+    pub fn options() -> InitProcessOptions {
+        InitProcessOptions::new()
     }
 }
 
@@ -261,12 +265,18 @@ impl ProcessOptions {
                                 drop(cgroup_file);
                                 drop(pid_tx);
                                 let tx = pipe.tx();
-                                // Setup cgroup namespace.
-                                nix::sched::setns(pidfd, CloneFlags::CLONE_NEWCGROUP)?;
-                                // Setup workdir.
-                                chdir(&work_dir)?;
-                                // Setup user.
-                                container.user_mapper.set_user(uid, gid)?;
+                                // Unlock parent process.
+                                write_result(
+                                    tx,
+                                    move || -> Result<(), Error> {
+                                        // Setup cgroup namespace.
+                                        nix::sched::setns(pidfd, CloneFlags::CLONE_NEWCGROUP)?;
+                                        // Setup workdir.
+                                        chdir(&work_dir)?;
+                                        // Setup user.
+                                        container.user_mapper.set_user(uid, gid)
+                                    }(),
+                                )??;
                                 // Prepare exec arguments.
                                 let filename = CString::new(command[0].as_bytes())?;
                                 let argv = Result::<Vec<_>, _>::from_iter(
@@ -275,18 +285,18 @@ impl ProcessOptions {
                                 let envp = Result::<Vec<_>, _>::from_iter(
                                     environ.iter().map(|v| CString::new(v.as_bytes())),
                                 )?;
-                                // Unlock parent process.
-                                write_ok(tx)?;
                                 // Run process.
                                 Ok(execvpe(&filename, &argv, &envp)?)
                             });
                             unsafe { nix::libc::_exit(2) }
                         }
                         CloneResult::Parent { child } => {
-                            // Send child pid to parent process.
-                            write_pid(pid_tx, child)?;
-                            // Await child process is started.
-                            exit_child(read_ok(pipe.rx()));
+                            exit_child(move || -> Result<(), Error> {
+                                // Send child pid to parent process.
+                                write_pid(pid_tx, child)?;
+                                // Await child process is started.
+                                read_result(pipe.rx())?
+                            }())
                         }
                     }
                 });
@@ -295,7 +305,6 @@ impl ProcessOptions {
             ForkResult::Parent { child } => {
                 let child = unsafe { OwnedPid::from_raw(child) };
                 let rx = pid_pipe.rx();
-                // Self::run_parent(pipe.rx(), config, child)
                 // Read subchild pid.
                 let sibling = unsafe { OwnedPid::from_raw(read_pid(rx)?) };
                 // Wait for child exit.
@@ -316,15 +325,15 @@ impl Process {
         Self { pid }
     }
 
-    pub fn options() -> ProcessOptions {
-        ProcessOptions::new()
-    }
-
     pub fn as_pid(&self) -> Pid {
         self.pid
     }
 
     pub fn wait(&mut self) -> Result<WaitStatus, Error> {
         Ok(waitpid(self.pid, Some(WaitPidFlag::__WALL))?)
+    }
+
+    pub fn options() -> ProcessOptions {
+        ProcessOptions::new()
     }
 }
