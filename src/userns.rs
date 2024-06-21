@@ -1,13 +1,18 @@
 use std::ffi::CString;
+use std::fmt::Debug;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use std::panic::{catch_unwind, RefUnwindSafe, UnwindSafe};
 use std::process::Command;
 use std::str::FromStr;
 
 use nix::libc::uid_t;
 use nix::unistd::{getgid, getgrouplist, getuid, setgid, setgroups, setuid, User};
 
-use crate::{Error, Pid};
+use crate::{
+    clone3, exit_child, new_pipe, read_ok, read_result, write_ok, write_result, CloneArgs,
+    CloneResult, Error, OwnedPid, Pid,
+};
 
 pub type Uid = nix::unistd::Uid;
 pub type Gid = nix::unistd::Gid;
@@ -35,7 +40,7 @@ impl<T: From<uid_t>> IdMap<T> {
 }
 
 /// Represents mapper for user IDs and group IDs in container namespace.
-pub trait UserMapper {
+pub trait UserMapper: Send + Sync + Debug {
     /// Runs mapping for new user namespace initialized by specified process.
     fn run_map_user(&self, pid: Pid) -> Result<(), Error>;
 
@@ -216,4 +221,54 @@ impl UserMapper for NewIdMap {
     fn gid_count(&self) -> u32 {
         self.gid_map.iter().fold(0, |acc, x| acc + x.size)
     }
+}
+
+pub fn run_as_user<
+    T: UserMapper + RefUnwindSafe + ?Sized,
+    Fn: FnOnce() -> Result<(), Error> + UnwindSafe,
+>(
+    user_mapper: &T,
+    uid: Uid,
+    gid: Gid,
+    func: Fn,
+) -> Result<(), Error> {
+    let pipe = new_pipe()?;
+    let child_pipe = new_pipe()?;
+    let mut clone_args = CloneArgs::default();
+    clone_args.flag_newuser();
+    match unsafe { clone3(&clone_args) }? {
+        CloneResult::Child => {
+            let _ = catch_unwind(move || {
+                let rx = pipe.rx();
+                let tx = child_pipe.tx();
+                exit_child(move || -> Result<(), Error> {
+                    read_ok(rx)?;
+                    user_mapper.set_user(uid, gid)?;
+                    write_result(tx, func())
+                }())
+            });
+            unsafe { nix::libc::_exit(2) }
+        }
+        CloneResult::Parent { child } => {
+            let child = unsafe { OwnedPid::from_raw(child) };
+            let rx = child_pipe.rx();
+            let tx = pipe.tx();
+            user_mapper.run_map_user(child.as_raw())?;
+            // Unlock child process.
+            write_ok(tx)?;
+            // Await child process result.
+            read_result(rx)??;
+            child.wait_success()
+        }
+    }
+}
+
+pub fn run_as_root<
+    T: UserMapper + RefUnwindSafe + ?Sized,
+    Fn: FnOnce() -> Result<(), Error> + UnwindSafe,
+>(
+    user_mapper: &T,
+    func: Fn,
+) -> Result<(), Error> {
+    run_as_user(user_mapper, Uid::from(0), Gid::from(0), func)
 }

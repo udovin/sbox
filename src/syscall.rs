@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 
+use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
 use nix::{errno::Errno, libc::syscall};
 
 use crate::Error;
@@ -120,4 +121,110 @@ pub(crate) fn new_pipe() -> Result<Pipe, Error> {
     let rx = unsafe { File::from_raw_fd(rx) };
     let tx = unsafe { File::from_raw_fd(tx) };
     Ok(Pipe { rx, tx })
+}
+
+pub(super) fn read_result(mut rx: impl Read) -> Result<Result<(), Error>, Error> {
+    let mut buf = [0; std::mem::size_of::<u8>()];
+    rx.read_exact(&mut buf)?;
+    match u8::from_le_bytes(buf) {
+        0 => Ok(Ok(())),
+        1 => {
+            let mut buf = [0; std::mem::size_of::<usize>()];
+            rx.read_exact(&mut buf)?;
+            let len = usize::from_le_bytes(buf);
+            let mut buf = vec![0; len];
+            rx.read_exact(&mut buf)?;
+            Ok(Err(String::from_utf8(buf)?.into()))
+        }
+        _ => unreachable!(),
+    }
+}
+
+pub(super) fn write_result(mut tx: impl Write, result: Result<(), Error>) -> Result<(), Error> {
+    match result {
+        Ok(()) => Ok(tx.write_all(&u8::to_le_bytes(0))?),
+        Err(err) => {
+            tx.write_all(&u8::to_le_bytes(1))?;
+            let msg = err.to_string();
+            tx.write_all(&usize::to_le_bytes(msg.as_bytes().len()))?;
+            Ok(tx.write_all(msg.as_bytes())?)
+        }
+    }
+}
+
+pub(super) fn read_ok(mut rx: impl Read) -> Result<(), Error> {
+    Ok(rx.read_exact(&mut [0; 1])?)
+}
+
+pub(super) fn write_ok(mut tx: impl Write) -> Result<(), Error> {
+    Ok(tx.write_all(&[0])?)
+}
+
+pub(super) fn read_pid(mut rx: impl Read) -> Result<Pid, Error> {
+    let mut buf = [0; 4];
+    rx.read_exact(&mut buf)?;
+    Ok(Pid::from_raw(nix::libc::pid_t::from_le_bytes(buf)))
+}
+
+pub(super) fn write_pid(mut tx: impl Write, pid: Pid) -> Result<(), Error> {
+    let buf = pid.as_raw().to_le_bytes();
+    tx.write_all(&buf)?;
+    Ok(())
+}
+
+pub(super) fn exit_child<T, E>(result: Result<T, E>) -> ! {
+    match result {
+        Ok(_) => unsafe { nix::libc::_exit(0) },
+        Err(_) => unsafe { nix::libc::_exit(1) },
+    }
+}
+
+pub(super) struct OwnedPid(Option<Pid>);
+
+impl OwnedPid {
+    pub unsafe fn from_raw(pid: Pid) -> Self {
+        Self(Some(pid))
+    }
+
+    pub fn as_raw(&self) -> Pid {
+        self.0.unwrap()
+    }
+
+    pub fn into_raw(mut self) -> Pid {
+        self.0.take().unwrap()
+    }
+
+    pub fn wait_success(self) -> Result<(), Error> {
+        let status = waitpid(self.into_raw(), Some(WaitPidFlag::__WALL))?;
+        match status {
+            WaitStatus::Exited(_, 0) => Ok(()),
+            WaitStatus::Exited(_, v) => Err(format!("Child exited with: {v}").into()),
+            WaitStatus::Signaled(_, v, _) => Err(format!("Child killed with: {v}").into()),
+            _ => panic!("Unexpected status: {status:?}"),
+        }
+    }
+}
+
+impl Drop for OwnedPid {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0.take() {
+            waitpid(pid, Some(WaitPidFlag::__WALL)).unwrap();
+        }
+    }
+}
+
+pub(crate) fn ignore_kind(
+    result: std::io::Result<()>,
+    kind: std::io::ErrorKind,
+) -> std::io::Result<()> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            if err.kind() == kind {
+                Ok(())
+            } else {
+                Err(err)
+            }
+        }
+    }
 }

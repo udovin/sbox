@@ -1,12 +1,12 @@
-use std::{
-    fs::File,
-    io::ErrorKind,
-    path::{Path, PathBuf},
-};
+use std::fs::{create_dir, remove_dir_all, File};
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
 
-use nix::unistd::{getgid, getuid};
 use rand::distributions::{Alphanumeric, DistString};
-use sbox::{ContainerConfig, Error, Manager, NewIdMap, ProcessConfig};
+use sbox::{
+    run_as_root, BaseMounts, Cgroup, Container, Error, Gid, InitProcess, NewIdMap, OverlayMount,
+    Process, Uid,
+};
 use tar::Archive;
 
 pub struct TempDir(PathBuf);
@@ -87,49 +87,74 @@ fn get_cgroup() -> Result<PathBuf, Error> {
 }
 
 #[test]
-fn test_manager() {
+fn test_container() {
     let tmpdir = temp_dir().unwrap();
     let cgroup = get_cgroup().unwrap();
-    let rootfs = get_rootfs().unwrap();
     let state_dir = tmpdir.join("state");
     let rootfs_dir = tmpdir.join("rootfs");
+    let user_mapper = NewIdMap::new_root_subid(Uid::current(), Gid::current()).unwrap();
+    {
+        let rootfs_dir = rootfs_dir.clone();
+        let mut rootfs = get_rootfs().unwrap();
+        run_as_root(&user_mapper, move || Ok(rootfs.unpack(rootfs_dir)?)).unwrap();
+    }
     println!("Rootfs path: {:?}", rootfs_dir);
     println!("Cgroup path: {:?}", cgroup);
     println!("State path: {:?}", state_dir);
-    let user_mapper = NewIdMap::new_root_subid(getuid(), getgid()).unwrap();
-    println!("User mapper: {:?}", &user_mapper);
-    let manager = Manager::new(state_dir, cgroup, user_mapper).unwrap();
-    manager.import_layer(rootfs, &rootfs_dir).unwrap();
-    let mut container = manager
-        .create_container(
-            "test1".into(),
-            ContainerConfig {
-                layers: vec![rootfs_dir.clone()],
-                ..Default::default()
-            },
-        )
+    create_dir(&state_dir).unwrap();
+    create_dir(state_dir.join("diff")).unwrap();
+    create_dir(state_dir.join("work")).unwrap();
+    let cgroup = Cgroup::new(
+        "/sys/fs/cgroup",
+        cgroup.strip_prefix("/sys/fs/cgroup").unwrap(),
+    )
+    .unwrap();
+    let container = Container::options()
+        .cgroup(cgroup.clone())
+        .add_mount(OverlayMount::new(
+            vec![rootfs_dir.clone()],
+            state_dir.join("diff"),
+            state_dir.join("work"),
+        ))
+        .add_mount(BaseMounts::new())
+        .rootfs(rootfs_dir)
+        .user_mapper(user_mapper.clone())
+        .create()
         .unwrap();
-    // Run init process.
-    let init_process = container
-        .start(ProcessConfig {
-            command: vec![
-                "/bin/sh".into(),
-                "-c".into(),
-                "echo -n 'Hello, ' && sleep 1".into(),
-            ],
-            ..Default::default()
-        })
+    let mut init_process = InitProcess::options()
+        .command(vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "sleep 2 && echo 'Exited!'".into(),
+        ])
+        .cgroup("init")
+        .start(&container)
         .unwrap();
-    // Run process.
-    let process = container
-        .execute(ProcessConfig {
-            command: vec!["/bin/sh".into(), "-c".into(), "echo 'World!'".into()],
-            ..Default::default()
-        })
+    let mut new_user = Process::options()
+        .command(vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "adduser -D -u1000 admin".into(),
+        ])
+        .cgroup("system")
+        .start(&container, &init_process)
         .unwrap();
-    process.wait(None).unwrap();
-    init_process.wait(None).unwrap();
-    container.stop().unwrap();
-    container.destroy().unwrap();
-    manager.remove_layer(rootfs_dir).unwrap();
+    new_user.wait().unwrap();
+    let mut sleep_process = Process::options()
+        .command(vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "echo 'Hello, World!' && id && cat /proc/self/cgroup".into(),
+        ])
+        .cgroup("user")
+        .user(1000, 1000)
+        .start(&container, &init_process)
+        .unwrap();
+    sleep_process.wait().unwrap();
+    init_process.wait().unwrap();
+    cgroup.child("init").unwrap().remove().unwrap();
+    cgroup.child("system").unwrap().remove().unwrap();
+    cgroup.child("user").unwrap().remove().unwrap();
+    cgroup.remove().unwrap();
+    run_as_root(&user_mapper, move || Ok(remove_dir_all(tmpdir.as_path())?)).unwrap();
 }

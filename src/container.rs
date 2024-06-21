@@ -1,130 +1,81 @@
-use std::fs::{remove_dir, remove_dir_all, File};
-use std::io::{ErrorKind, Write};
-use std::path::{Path, PathBuf};
+use std::fs::create_dir_all;
+use std::panic::RefUnwindSafe;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use nix::errno::Errno;
-use nix::fcntl::{open, OFlag};
-use nix::mount::{mount, umount2, MntFlags, MsFlags};
-use nix::sys::wait::{waitpid, WaitPidFlag};
-use nix::unistd::fchdir;
+use crate::{Cgroup, Mount, UserMapper};
 
-use crate::{Error, ExecuteTask, InitTask, Pid, Process, ProcessConfig, RootFnTask, UserMapper};
+pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
-#[derive(Debug, Default)]
-pub struct ContainerConfig {
-    pub layers: Vec<PathBuf>,
-    pub hostname: String,
+#[derive(Clone, Debug, Default)]
+pub struct ContainerOptions {
+    rootfs: Option<PathBuf>,
+    cgroup: Option<Cgroup>,
+    user_mapper: Option<Arc<dyn UserMapper + RefUnwindSafe>>,
+    mounts: Vec<Arc<dyn Mount + RefUnwindSafe>>,
+    hostname: String,
+}
+
+impl ContainerOptions {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn rootfs(mut self, rootfs: PathBuf) -> Self {
+        self.rootfs = Some(rootfs);
+        self
+    }
+
+    pub fn cgroup(mut self, cgroup: Cgroup) -> Self {
+        self.cgroup = Some(cgroup);
+        self
+    }
+
+    pub fn user_mapper<T: UserMapper + RefUnwindSafe + 'static>(mut self, user_mapper: T) -> Self {
+        self.user_mapper = Some(Arc::new(user_mapper));
+        self
+    }
+
+    pub fn add_mount<T: Mount + RefUnwindSafe + 'static>(mut self, mount: T) -> Self {
+        self.mounts.push(Arc::new(mount));
+        self
+    }
+
+    pub fn hostname<T: ToString>(mut self, hostname: T) -> Self {
+        self.hostname = hostname.to_string();
+        self
+    }
+
+    pub fn create(self) -> Result<Container, Error> {
+        let rootfs = self.rootfs.ok_or("Container rootfs should specified")?;
+        let cgroup = self.cgroup.ok_or("Container cgroup should specified")?;
+        let user_mapper = self
+            .user_mapper
+            .ok_or("Container user mapper should specified")?;
+        let mounts = self.mounts;
+        let hostname = self.hostname;
+        create_dir_all(&rootfs)?;
+        cgroup.create()?;
+        Ok(Container {
+            rootfs,
+            cgroup,
+            user_mapper,
+            mounts,
+            hostname,
+        })
+    }
 }
 
 pub struct Container {
-    pub(super) state_path: PathBuf,
-    pub(super) cgroup_path: PathBuf,
-    pub(super) user_mapper: Arc<dyn UserMapper>,
-    pub(super) config: ContainerConfig,
-    pub(super) pid: Option<Pid>,
+    pub(super) rootfs: PathBuf,
+    pub(super) cgroup: Cgroup,
+    pub(super) user_mapper: Arc<dyn UserMapper + RefUnwindSafe>,
+    pub(super) mounts: Vec<Arc<dyn Mount + RefUnwindSafe>>,
+    pub(super) hostname: String,
 }
 
 impl Container {
-    /// Starts container with initial process.
-    pub fn start(&mut self, config: ProcessConfig) -> Result<Process, Error> {
-        if self.pid.is_some() {
-            return Err("Container already started".into());
-        }
-        if !self.user_mapper.is_uid_mapped(config.uid) {
-            return Err(format!("User {} is not mapped", config.uid).into());
-        }
-        if !self.user_mapper.is_gid_mapped(config.gid) {
-            return Err(format!("User {} is not mapped", config.gid).into());
-        }
-        let process = InitTask::start(self, config)?;
-        self.pid = Some(process.pid());
-        Ok(process)
+    pub fn options() -> ContainerOptions {
+        ContainerOptions::new()
     }
-
-    /// Executes process inside container.
-    pub fn execute(&self, config: ProcessConfig) -> Result<Process, Error> {
-        ExecuteTask::start(self, config)
-    }
-
-    /// Kills all processes inside container.
-    pub fn kill(&mut self) -> Result<(), Error> {
-        let mut file = File::options()
-            .write(true)
-            .open(self.cgroup_path.join("cgroup.kill"))?;
-        file.write_all("1".as_bytes())?;
-        drop(file);
-        self.stop()
-    }
-
-    /// Stops container.
-    pub fn stop(&mut self) -> Result<(), Error> {
-        let pid = match self.pid.take() {
-            Some(v) => v,
-            None => return Ok(()),
-        };
-        match waitpid(pid, Some(WaitPidFlag::__WALL)) {
-            Ok(_) => Ok(()),
-            Err(Errno::ECHILD) => Ok(()),
-            Err(err) => Err(err.into()),
-        }
-    }
-
-    /// Releases all associated resources with container.
-    pub fn destroy(mut self) -> Result<(), Error> {
-        let kill_err = self.kill();
-        let state_err = self.remove_state();
-        let cgroup_err = remove_dir(&self.cgroup_path);
-        kill_err?;
-        state_err?;
-        Ok(cgroup_err?)
-    }
-
-    fn remove_state(&self) -> Result<(), Error> {
-        let func = || Ok(remove_dir_all(&self.state_path)?);
-        RootFnTask::start(self.user_mapper.as_ref(), func)
-    }
-}
-
-impl Drop for Container {
-    fn drop(&mut self) {
-        if let Some(pid) = self.pid.take() {
-            let _ = self.kill();
-            let _ = waitpid(pid, Some(WaitPidFlag::__WALL));
-        }
-    }
-}
-
-pub(crate) fn ignore_kind(result: std::io::Result<()>, kind: ErrorKind) -> std::io::Result<()> {
-    match result {
-        Ok(()) => Ok(()),
-        Err(err) => {
-            if err.kind() == kind {
-                Ok(())
-            } else {
-                Err(err)
-            }
-        }
-    }
-}
-
-pub(crate) fn pivot_root(path: &Path) -> Result<(), Error> {
-    let new_root = open(
-        path,
-        OFlag::O_DIRECTORY | OFlag::O_RDONLY,
-        nix::sys::stat::Mode::empty(),
-    )?;
-    // Changes root to new path and stacks original root on the same path.
-    nix::unistd::pivot_root(path, path)?;
-    // Make the original root directory rslave to avoid propagating unmount event.
-    mount(
-        None::<&str>,
-        "/",
-        None::<&str>,
-        MsFlags::MS_SLAVE | MsFlags::MS_REC,
-        None::<&str>,
-    )?;
-    // Unmount the original root directory which was stacked on top of new root directory.
-    umount2("/", MntFlags::MNT_DETACH)?;
-    Ok(fchdir(new_root)?)
 }
