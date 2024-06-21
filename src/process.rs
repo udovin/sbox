@@ -106,13 +106,19 @@ impl InitProcessOptions {
                             tx,
                             move || -> Result<(), Error> {
                                 // Setup mount namespace.
-                                setup_mount_namespace(&container)?;
+                                setup_mount_namespace(&container)
+                                    .map_err(|v| format!("Cannot setup mount namespace: {v}"))?;
                                 // Setup uts namespace.
-                                sethostname(&container.hostname)?;
+                                sethostname(&container.hostname)
+                                    .map_err(|v| format!("Cannot setup hostname: {v}"))?;
                                 // Setup workdir.
-                                chdir(&work_dir)?;
+                                chdir(&work_dir)
+                                    .map_err(|v| format!("Cannot change directory: {v}"))?;
                                 // Setup user.
-                                container.user_mapper.set_user(uid, gid)?;
+                                container
+                                    .user_mapper
+                                    .set_user(uid, gid)
+                                    .map_err(|v| format!("Cannot set current user: {v}"))?;
                                 Ok(())
                             }(),
                         )??;
@@ -136,9 +142,15 @@ impl InitProcessOptions {
                 let rx = child_pipe.rx();
                 let tx = pipe.tx();
                 // Map user.
-                container.user_mapper.run_map_user(child.as_raw())?;
+                container
+                    .user_mapper
+                    .run_map_user(child.as_raw())
+                    .map_err(|v| format!("Cannot setup user namespace: {v}"))?;
+                // Setup init cgroup.
                 if let Some(cgroup) = cgroup {
-                    cgroup.add_process(child.as_raw())?;
+                    cgroup
+                        .add_process(child.as_raw())
+                        .map_err(|v| format!("Cannot add process to cgroup: {v}"))?;
                 }
                 // Unlock child process.
                 write_ok(tx)?;
@@ -254,7 +266,8 @@ impl ProcessOptions {
                         | CloneFlags::CLONE_NEWIPC
                         | CloneFlags::CLONE_NEWUTS
                         | CloneFlags::from_bits_retain(nix::libc::CLONE_NEWTIME);
-                    nix::sched::setns(&pidfd, flags)?;
+                    nix::sched::setns(&pidfd, flags)
+                        .map_err(|v| format!("Cannot enter init namespaces: {v}"))?;
                     let pipe = new_pipe()?;
                     let mut clone_args = CloneArgs::default();
                     clone_args.flag_parent();
@@ -270,9 +283,14 @@ impl ProcessOptions {
                                     tx,
                                     move || -> Result<(), Error> {
                                         // Setup cgroup namespace.
-                                        nix::sched::setns(pidfd, CloneFlags::CLONE_NEWCGROUP)?;
+                                        nix::sched::setns(pidfd, CloneFlags::CLONE_NEWCGROUP)
+                                            .map_err(|v| {
+                                                format!("Cannot enter cgroup namespace: {v}")
+                                            })?;
                                         // Setup workdir.
-                                        chdir(&work_dir)?;
+                                        chdir(&work_dir).map_err(|v| {
+                                            format!("Cannot change work directory: {v}")
+                                        })?;
                                         // Setup user.
                                         container.user_mapper.set_user(uid, gid)
                                     }(),

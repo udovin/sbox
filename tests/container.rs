@@ -65,7 +65,9 @@ fn get_rootfs() -> Result<Archive<File>, Error> {
 
 fn get_cgroup() -> Result<Cgroup, Error> {
     if let Ok(v) = std::env::var("TEST_CGROUP_PATH") {
-        return Cgroup::new("/sys/fs/cgroup", v.strip_prefix("/sys/fs/cgroup").unwrap());
+        let path = PathBuf::from(v);
+        let root_path = "/sys/fs/cgroup";
+        return Cgroup::new(root_path, path.strip_prefix(root_path).unwrap());
     }
     Ok(Cgroup::current()?
         .parent()
