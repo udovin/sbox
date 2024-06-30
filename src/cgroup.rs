@@ -7,7 +7,7 @@ use crate::{Error, Pid};
 
 #[derive(Clone, Debug)]
 pub struct Cgroup {
-    root_path: PathBuf,
+    mount_path: PathBuf,
     path: PathBuf,
 }
 
@@ -16,10 +16,31 @@ const CGROUP_MOUNT: &str = "/sys/fs/cgroup";
 const CGROUP_PROCS: &str = "cgroup.procs";
 
 impl Cgroup {
-    pub fn new(root_path: impl Into<PathBuf>, cgroup: impl AsRef<Path>) -> Result<Self, Error> {
-        let root_path = root_path.into();
-        let path = root_path.join(cgroup);
-        Ok(Self { root_path, path })
+    pub fn new(mount_path: impl Into<PathBuf>, name: impl AsRef<Path>) -> Result<Self, Error> {
+        let name = name.as_ref();
+        if name.is_absolute() {
+            Err("Cgroup name cannot be absolute")?
+        }
+        let mount_path = mount_path.into();
+        if !mount_path.is_absolute() {
+            Err("Cgroup mount path should be absolute")?
+        }
+        let path = mount_path.join(name);
+        Ok(Self { mount_path, path })
+    }
+
+    pub fn as_path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn name(&self) -> &Path {
+        self.path
+            .strip_prefix(&self.mount_path)
+            .expect("Cgroup path does not starts with mount path")
+    }
+
+    pub fn mount_path(&self) -> &Path {
+        &self.mount_path
     }
 
     pub fn current() -> Result<Self, Error> {
@@ -41,22 +62,23 @@ impl Cgroup {
 
     pub fn parent(&self) -> Option<Self> {
         let path = self.path.parent()?;
-        if path.starts_with(&self.root_path) {
-            let root_path = self.root_path.clone();
+        if path.starts_with(&self.mount_path) {
+            let mount_path = self.mount_path.clone();
             let path = path.to_owned();
-            Some(Self { root_path, path })
+            Some(Self { mount_path, path })
         } else {
             None
         }
     }
 
-    pub fn child(&self, cgroup: impl AsRef<Path>) -> Result<Self, Error> {
-        if cgroup.as_ref().is_absolute() {
-            Err("Child cgroup cannot be absolute")?
+    pub fn child(&self, name: impl AsRef<Path>) -> Result<Self, Error> {
+        let name = name.as_ref();
+        if name.is_absolute() {
+            Err("Child cgroup name cannot be absolute")?
         }
-        let root_path = self.root_path.clone();
-        let path = self.path.join(cgroup);
-        Ok(Self { root_path, path })
+        let mount_path = self.mount_path.clone();
+        let path = self.path.join(name);
+        Ok(Self { mount_path, path })
     }
 
     pub fn create(&self) -> Result<(), Error> {

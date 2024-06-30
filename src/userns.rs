@@ -87,7 +87,7 @@ impl Default for ProcUserMapper {
 
 impl UserMapper for ProcUserMapper {
     /// Runs mapping for new user namespace initialized by specified process.
-    fn run_map_user(&self, pid: Pid) -> Result<(), Error> {
+    fn run_map_user(&self, _pid: Pid) -> Result<(), Error> {
         todo!()
     }
 

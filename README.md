@@ -12,11 +12,11 @@ use std::fs::create_dir_all;
 use std::path::PathBuf;
 
 use nix::unistd::{getgid, getuid};
-use sbox::{BaseMounts, Cgroup, Container, InitProcess, NewIdMap, OverlayMount};
+use sbox::{BaseMounts, BinNewIdMapper, Cgroup, Container, InitProcess, OverlayMount};
 
 fn main() {
     // Create user namespace mapper for current user with subuids and subgids.
-    let user_mapper = NewIdMap::new_root_subid(getuid(), getgid()).unwrap();
+    let user_mapper = BinNewIdMapper::new_root_subid(getuid(), getgid()).unwrap();
     // Create cgroup for container.
     let cgroup = Cgroup::new("/sys/fs/cgroup", "sbox").unwrap();
     // Path to rootfs for container image.
