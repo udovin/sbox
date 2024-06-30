@@ -60,20 +60,85 @@ pub trait UserMapper: Send + Sync + Debug {
     fn gid_count(&self) -> u32;
 }
 
+#[derive(Clone, Debug)]
+pub struct ProcUserMapper {
+    pub uid_map: Vec<IdMap<Uid>>,
+    pub gid_map: Vec<IdMap<Gid>>,
+    pub set_groups: bool,
+}
+
+impl ProcUserMapper {
+    /// Maps uid and gid as container root.
+    pub fn new_root(uid: Uid, gid: Gid) -> Self {
+        Self {
+            uid_map: vec![IdMap::new_root(uid)],
+            gid_map: vec![IdMap::new_root(gid)],
+            set_groups: false,
+        }
+    }
+}
+
+/// Creates user mapper for current process uid and gid.
+impl Default for ProcUserMapper {
+    fn default() -> Self {
+        Self::new_root(getuid(), getgid())
+    }
+}
+
+impl UserMapper for ProcUserMapper {
+    /// Runs mapping for new user namespace initialized by specified process.
+    fn run_map_user(&self, pid: Pid) -> Result<(), Error> {
+        todo!()
+    }
+
+    /// Sets user ID and group ID for current process in user namespace.
+    fn set_user(&self, uid: Uid, gid: Gid) -> Result<(), Error> {
+        if self.set_groups {
+            let groups = match User::from_uid(uid)? {
+                Some(user) => getgrouplist(&CString::new(user.name.as_bytes())?, gid)?,
+                None => vec![gid],
+            };
+            setgroups(&groups)?;
+        }
+        setgid(gid)?;
+        Ok(setuid(uid)?)
+    }
+
+    /// Verifies that specified user ID is represented in container.
+    fn is_uid_mapped(&self, uid: Uid) -> bool {
+        is_id_mapped(&self.uid_map, uid)
+    }
+
+    /// Verifies that specified group ID is represented in container.
+    fn is_gid_mapped(&self, gid: Gid) -> bool {
+        is_id_mapped(&self.gid_map, gid)
+    }
+
+    /// Calculates amount of mapped user IDs.
+    fn uid_count(&self) -> u32 {
+        self.uid_map.iter().fold(0, |acc, x| acc + x.size)
+    }
+
+    /// Calculates amount of mapped group IDs.
+    fn gid_count(&self) -> u32 {
+        self.gid_map.iter().fold(0, |acc, x| acc + x.size)
+    }
+}
+
 /// Represents user mapper implemented using new{u,g}idmap.
 ///
 /// Uses new{u,g}idmap binaries from following paths:
 ///   * `/bin/newuidmap`
 ///   * `/bin/newgidmap`
 #[derive(Clone, Debug)]
-pub struct NewIdMap {
+pub struct BinNewIdMapper {
     pub uid_map: Vec<IdMap<Uid>>,
     pub gid_map: Vec<IdMap<Gid>>,
     pub uid_binary: String,
     pub gid_binary: String,
 }
 
-impl NewIdMap {
+impl BinNewIdMapper {
     /// Maps uid and gid as container root.
     ///
     /// Uses new{u,g}idmap binaries from following paths:
@@ -159,31 +224,16 @@ impl NewIdMap {
         }
         Ok(())
     }
-
-    fn is_mapped<T>(id_map: &[IdMap<T>], id: T) -> bool
-    where
-        T: Copy + Into<uid_t>,
-    {
-        for v in id_map {
-            if v.container_id.into() + v.size <= id.into() {
-                continue;
-            }
-            if v.container_id.into() <= id.into() {
-                return true;
-            }
-        }
-        false
-    }
 }
 
 /// Creates user mapper for current process uid and gid.
-impl Default for NewIdMap {
+impl Default for BinNewIdMapper {
     fn default() -> Self {
         Self::new_root(getuid(), getgid())
     }
 }
 
-impl UserMapper for NewIdMap {
+impl UserMapper for BinNewIdMapper {
     /// Runs mapping for new user namespace initialized by specified process.
     fn run_map_user(&self, pid: Pid) -> Result<(), Error> {
         Self::run_id_map(&self.uid_map, &self.uid_binary, pid)?;
@@ -195,7 +245,7 @@ impl UserMapper for NewIdMap {
     fn set_user(&self, uid: Uid, gid: Gid) -> Result<(), Error> {
         let groups = match User::from_uid(uid)? {
             Some(user) => getgrouplist(&CString::new(user.name.as_bytes())?, gid)?,
-            None => Vec::new(),
+            None => vec![gid],
         };
         setgroups(&groups)?;
         setgid(gid)?;
@@ -204,12 +254,12 @@ impl UserMapper for NewIdMap {
 
     /// Verifies that specified user ID is represented in container.
     fn is_uid_mapped(&self, uid: Uid) -> bool {
-        Self::is_mapped(&self.uid_map, uid)
+        is_id_mapped(&self.uid_map, uid)
     }
 
     /// Verifies that specified group ID is represented in container.
     fn is_gid_mapped(&self, gid: Gid) -> bool {
-        Self::is_mapped(&self.gid_map, gid)
+        is_id_mapped(&self.gid_map, gid)
     }
 
     /// Calculates amount of mapped user IDs.
@@ -271,4 +321,19 @@ pub fn run_as_root<
     func: Fn,
 ) -> Result<(), Error> {
     run_as_user(user_mapper, 0, 0, func)
+}
+
+fn is_id_mapped<T>(id_map: &[IdMap<T>], id: T) -> bool
+where
+    T: Copy + Into<uid_t>,
+{
+    for v in id_map {
+        if v.container_id.into() + v.size <= id.into() {
+            continue;
+        }
+        if v.container_id.into() <= id.into() {
+            return true;
+        }
+    }
+    false
 }

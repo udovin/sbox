@@ -21,7 +21,7 @@ pub type WaitStatus = nix::sys::wait::WaitStatus;
 pub struct InitProcessOptions {
     command: Vec<String>,
     environ: Vec<String>,
-    work_dir: Option<PathBuf>,
+    work_dir: PathBuf,
     uid: Option<Uid>,
     gid: Option<Gid>,
     cgroup: PathBuf,
@@ -43,7 +43,7 @@ impl InitProcessOptions {
     }
 
     pub fn work_dir(mut self, work_dir: PathBuf) -> Self {
-        self.work_dir = Some(work_dir);
+        self.work_dir = work_dir;
         self
     }
 
@@ -67,7 +67,11 @@ impl InitProcessOptions {
         if !container.user_mapper.is_gid_mapped(gid) {
             return Err(format!("Group {} is not mapped", gid).into());
         }
-        let work_dir = self.work_dir.unwrap_or("/".into());
+        let work_dir = if !self.work_dir.is_empty() {
+            self.work_dir
+        } else {
+            "/".into()
+        };
         let command = self.command;
         let environ = self.environ;
         let cgroup = if self.cgroup.is_empty() {
@@ -188,7 +192,7 @@ impl InitProcess {
 pub struct ProcessOptions {
     command: Vec<String>,
     environ: Vec<String>,
-    work_dir: Option<PathBuf>,
+    work_dir: PathBuf,
     uid: Option<Uid>,
     gid: Option<Gid>,
     cgroup: PathBuf,
@@ -210,7 +214,7 @@ impl ProcessOptions {
     }
 
     pub fn work_dir(mut self, work_dir: impl Into<PathBuf>) -> Self {
-        self.work_dir = Some(work_dir.into());
+        self.work_dir = work_dir.into();
         self
     }
 
@@ -238,7 +242,11 @@ impl ProcessOptions {
         if !container.user_mapper.is_gid_mapped(gid) {
             return Err(format!("Group {} is not mapped", gid).into());
         }
-        let work_dir = self.work_dir.unwrap_or("/".into());
+        let work_dir = if !self.work_dir.is_empty() {
+            self.work_dir
+        } else {
+            "/".into()
+        };
         let cgroup = if self.cgroup.is_empty() {
             None
         } else {

@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use rand::distributions::{Alphanumeric, DistString};
 use sbox::{
-    run_as_root, BaseMounts, Cgroup, Container, Error, Gid, InitProcess, NewIdMap, OverlayMount,
-    Process, Uid,
+    run_as_root, BaseMounts, BinNewIdMapper, Cgroup, Container, Error, Gid, InitProcess,
+    OverlayMount, Process, Uid,
 };
 use tar::Archive;
 
@@ -81,7 +81,7 @@ fn test_container() {
     cgroup.create().unwrap();
     let state_dir = tmpdir.join("state");
     let rootfs_dir = tmpdir.join("rootfs");
-    let user_mapper = NewIdMap::new_root_subid(Uid::current(), Gid::current()).unwrap();
+    let user_mapper = BinNewIdMapper::new_root_subid(Uid::current(), Gid::current()).unwrap();
     {
         let rootfs_dir = rootfs_dir.clone();
         let mut rootfs = get_rootfs().unwrap();

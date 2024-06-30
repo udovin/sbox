@@ -1,4 +1,4 @@
-use std::fs::{create_dir_all, remove_dir, File};
+use std::fs::{create_dir_all, read, remove_dir, File};
 use std::io::Write as _;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -23,7 +23,7 @@ impl Cgroup {
     }
 
     pub fn current() -> Result<Self, Error> {
-        for line in String::from_utf8(std::fs::read(PROC_CGROUP)?)?.split('\n') {
+        for line in String::from_utf8(read(PROC_CGROUP)?)?.split('\n') {
             let parts: Vec<_> = line.split(':').collect();
             if let Some(v) = parts.get(1) {
                 if !v.is_empty() {
@@ -51,6 +51,9 @@ impl Cgroup {
     }
 
     pub fn child(&self, cgroup: impl AsRef<Path>) -> Result<Self, Error> {
+        if cgroup.as_ref().is_absolute() {
+            Err("Child cgroup cannot be absolute")?
+        }
         let root_path = self.root_path.clone();
         let path = self.path.join(cgroup);
         Ok(Self { root_path, path })
