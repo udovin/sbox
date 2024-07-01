@@ -40,7 +40,7 @@ impl<T: From<uid_t>> IdMap<T> {
 }
 
 /// Represents mapper for user IDs and group IDs in container namespace.
-pub trait UserMapper: Send + Sync + Debug {
+pub trait UserMapper: Send + Sync + Debug + RefUnwindSafe {
     /// Runs mapping for new user namespace initialized by specified process.
     fn run_map_user(&self, pid: Pid) -> Result<(), Error>;
 

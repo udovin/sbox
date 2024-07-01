@@ -1,9 +1,8 @@
 use std::fs::create_dir_all;
-use std::panic::RefUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::{Cgroup, Mount, UserMapper};
+use crate::{Cgroup, Mount, NetworkManager, UserMapper};
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 
@@ -11,8 +10,9 @@ pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub struct ContainerOptions {
     rootfs: Option<PathBuf>,
     cgroup: Option<Cgroup>,
-    user_mapper: Option<Arc<dyn UserMapper + RefUnwindSafe>>,
-    mounts: Vec<Arc<dyn Mount + RefUnwindSafe>>,
+    user_mapper: Option<Arc<dyn UserMapper>>,
+    network_manager: Option<Arc<dyn NetworkManager>>,
+    mounts: Vec<Arc<dyn Mount>>,
     hostname: String,
 }
 
@@ -31,12 +31,17 @@ impl ContainerOptions {
         self
     }
 
-    pub fn user_mapper<T: UserMapper + RefUnwindSafe + 'static>(mut self, user_mapper: T) -> Self {
+    pub fn user_mapper<T: UserMapper + 'static>(mut self, user_mapper: T) -> Self {
         self.user_mapper = Some(Arc::new(user_mapper));
         self
     }
 
-    pub fn add_mount<T: Mount + RefUnwindSafe + 'static>(mut self, mount: T) -> Self {
+    pub fn network_manager<T: NetworkManager + 'static>(mut self, network_manager: T) -> Self {
+        self.network_manager = Some(Arc::new(network_manager));
+        self
+    }
+
+    pub fn add_mount<T: Mount + 'static>(mut self, mount: T) -> Self {
         self.mounts.push(Arc::new(mount));
         self
     }
@@ -52,6 +57,7 @@ impl ContainerOptions {
         let user_mapper = self
             .user_mapper
             .ok_or("Container user mapper should specified")?;
+        let network_manager = self.network_manager;
         let mounts = self.mounts;
         let hostname = self.hostname;
         create_dir_all(&rootfs)?;
@@ -60,6 +66,7 @@ impl ContainerOptions {
             rootfs,
             cgroup,
             user_mapper,
+            network_manager,
             mounts,
             hostname,
         })
@@ -69,8 +76,9 @@ impl ContainerOptions {
 pub struct Container {
     pub(super) rootfs: PathBuf,
     pub(super) cgroup: Cgroup,
-    pub(super) user_mapper: Arc<dyn UserMapper + RefUnwindSafe>,
-    pub(super) mounts: Vec<Arc<dyn Mount + RefUnwindSafe>>,
+    pub(super) user_mapper: Arc<dyn UserMapper>,
+    pub(super) network_manager: Option<Arc<dyn NetworkManager>>,
+    pub(super) mounts: Vec<Arc<dyn Mount>>,
     pub(super) hostname: String,
 }
 

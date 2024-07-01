@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use rand::distributions::{Alphanumeric, DistString};
 use sbox::{
     run_as_root, BaseMounts, BinNewIdMapper, Cgroup, Container, Error, Gid, InitProcess,
-    OverlayMount, Process, Uid,
+    OverlayMount, Process, Slirp4NetnsManager, Uid,
 };
 use tar::Archive;
 
@@ -103,6 +103,7 @@ fn test_container() {
         .add_mount(BaseMounts::new())
         .rootfs(state_dir.join("rootfs"))
         .user_mapper(user_mapper.clone())
+        .network_manager(Slirp4NetnsManager::new())
         .create()
         .unwrap();
     let mut init_process = InitProcess::options()

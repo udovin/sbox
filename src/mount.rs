@@ -4,11 +4,12 @@ use nix::unistd::fchdir;
 use std::fmt::Debug;
 use std::fs::create_dir;
 use std::io::ErrorKind;
+use std::panic::RefUnwindSafe;
 use std::path::{Path, PathBuf};
 
 use crate::{ignore_kind, Container, Error};
 
-pub trait Mount: Send + Sync + Debug {
+pub trait Mount: Send + Sync + Debug + RefUnwindSafe {
     fn mount(&self, rootfs: &Path) -> Result<(), Error>;
 }
 
@@ -62,6 +63,12 @@ pub struct BaseMounts {}
 impl BaseMounts {
     pub fn new() -> Self {
         Self {}
+    }
+}
+
+impl Default for BaseMounts {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

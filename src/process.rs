@@ -11,7 +11,7 @@ use nix::NixPath;
 use crate::{
     clone3, exit_child, new_pipe, pidfd_open, read_ok, read_pid, read_result,
     setup_mount_namespace, write_ok, write_pid, write_result, CloneArgs, CloneResult, Container,
-    Error, OwnedPid,
+    Error, NetworkHandle, OwnedPid,
 };
 
 pub type Signal = nix::sys::signal::Signal;
@@ -115,6 +115,10 @@ impl InitProcessOptions {
                                 // Setup uts namespace.
                                 sethostname(&container.hostname)
                                     .map_err(|v| format!("Cannot setup hostname: {v}"))?;
+                                // Setup network.
+                                if let Some(v) = &container.network_manager {
+                                    v.set_network()?;
+                                }
                                 // Setup workdir.
                                 chdir(&work_dir)
                                     .map_err(|v| format!("Cannot change directory: {v}"))?;
@@ -156,11 +160,16 @@ impl InitProcessOptions {
                         .add_process(child.as_raw())
                         .map_err(|v| format!("Cannot add process to cgroup: {v}"))?;
                 }
+                // Setup network namespace.
+                let network_handle = match &container.network_manager {
+                    Some(v) => v.run_network(child.as_raw())?,
+                    None => None,
+                };
                 // Unlock child process.
                 write_ok(tx)?;
                 // Await child process result.
                 read_result(rx)??;
-                Ok(InitProcess::new(child.into_raw()))
+                Ok(InitProcess::new(child.into_raw(), network_handle))
             }
         }
     }
@@ -168,11 +177,15 @@ impl InitProcessOptions {
 
 pub struct InitProcess {
     pid: Pid,
+    _network_handle: Option<Box<dyn NetworkHandle>>,
 }
 
 impl InitProcess {
-    fn new(pid: Pid) -> Self {
-        Self { pid }
+    fn new(pid: Pid, network_handle: Option<Box<dyn NetworkHandle>>) -> Self {
+        Self {
+            pid,
+            _network_handle: network_handle,
+        }
     }
 
     pub fn as_pid(&self) -> Pid {
