@@ -98,6 +98,43 @@ impl Cgroup {
             .write_all(pid.to_string().as_bytes())?)
     }
 
+    pub fn get_controllers(&self) -> Result<Vec<String>, Error> {
+        let content = std::fs::read(self.path.join("cgroup.controllers"))?;
+        let mut controllers = Vec::new();
+        for line in content.split(|c| *c == b'\n').filter(|v| !v.is_empty()) {
+            std::str::from_utf8(line)?
+                .split(' ')
+                .for_each(|v| controllers.push(v.to_owned()));
+        }
+        Ok(controllers)
+    }
+
+    pub fn add_controllers(&self, controllers: Vec<String>) -> Result<(), Error> {
+        let mut file = File::options()
+            .write(true)
+            .open(self.path.join("cgroup.controllers"))?;
+        file.write(
+            controllers
+                .into_iter()
+                .fold(String::new(), |acc, v| acc + " +" + &v)
+                .as_bytes(),
+        )?;
+        Ok(())
+    }
+
+    pub fn add_subtree_controllers(&self, controllers: Vec<String>) -> Result<(), Error> {
+        let mut file = File::options()
+            .write(true)
+            .open(self.path.join("cgroup.subtree_control"))?;
+        file.write(
+            controllers
+                .into_iter()
+                .fold(String::new(), |acc, v| acc + " +" + &v)
+                .as_bytes(),
+        )?;
+        Ok(())
+    }
+
     pub fn open(&self) -> Result<File, Error> {
         Ok(File::options()
             .read(true)

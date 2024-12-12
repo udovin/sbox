@@ -236,8 +236,10 @@ impl Default for BinNewIdMapper {
 impl UserMapper for BinNewIdMapper {
     /// Runs mapping for new user namespace initialized by specified process.
     fn run_map_user(&self, pid: Pid) -> Result<(), Error> {
-        Self::run_id_map(&self.uid_map, &self.uid_binary, pid)?;
-        Self::run_id_map(&self.gid_map, &self.gid_binary, pid)?;
+        Self::run_id_map(&self.uid_map, &self.uid_binary, pid)
+            .map_err(|v| format!("Cannot map users: {v}"))?;
+        Self::run_id_map(&self.gid_map, &self.gid_binary, pid)
+            .map_err(|v| format!("Cannot map groups: {v}"))?;
         Ok(())
     }
 
@@ -247,9 +249,9 @@ impl UserMapper for BinNewIdMapper {
             Some(user) => getgrouplist(&CString::new(user.name.as_bytes())?, gid)?,
             None => vec![gid],
         };
-        setgroups(&groups)?;
-        setgid(gid)?;
-        Ok(setuid(uid)?)
+        setgroups(&groups).map_err(|v| format!("Cannot set groups: {v}"))?;
+        setgid(gid).map_err(|v| format!("Cannot set group: {v}"))?;
+        Ok(setuid(uid).map_err(|v| format!("Cannot set user: {v}"))?)
     }
 
     /// Verifies that specified user ID is represented in container.
@@ -293,8 +295,12 @@ pub fn run_as_user<
                 let tx = child_pipe.tx();
                 exit_child(move || -> Result<(), Error> {
                     read_ok(rx)?;
-                    user_mapper.set_user(uid.into(), gid.into())?;
-                    write_result(tx, func())?
+                    write_result(
+                        tx,
+                        user_mapper
+                            .set_user(uid.into(), gid.into())
+                            .and_then(|_| func()),
+                    )?
                 }())
             });
             unsafe { nix::libc::_exit(2) }
