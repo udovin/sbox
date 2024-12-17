@@ -75,7 +75,7 @@ impl Default for BaseMounts {
 impl Mount for BaseMounts {
     fn mount(&self, rootfs: &Path) -> Result<(), Error> {
         setup_mount(
-            &rootfs,
+            rootfs,
             "sysfs",
             "/sys",
             "sysfs",
@@ -83,7 +83,7 @@ impl Mount for BaseMounts {
             None,
         )?;
         setup_mount(
-            &rootfs,
+            rootfs,
             "proc",
             "/proc",
             "proc",
@@ -91,7 +91,7 @@ impl Mount for BaseMounts {
             None,
         )?;
         setup_mount(
-            &rootfs,
+            rootfs,
             "tmpfs",
             "/dev",
             "tmpfs",
@@ -99,7 +99,7 @@ impl Mount for BaseMounts {
             Some("mode=755,size=65536k"),
         )?;
         setup_mount(
-            &rootfs,
+            rootfs,
             "devpts",
             "/dev/pts",
             "devpts",
@@ -107,7 +107,7 @@ impl Mount for BaseMounts {
             Some("newinstance,ptmxmode=0666,mode=0620"),
         )?;
         setup_mount(
-            &rootfs,
+            rootfs,
             "tmpfs",
             "/dev/shm",
             "tmpfs",
@@ -115,7 +115,7 @@ impl Mount for BaseMounts {
             Some("mode=1777,size=65536k"),
         )?;
         setup_mount(
-            &rootfs,
+            rootfs,
             "mqueue",
             "/dev/mqueue",
             "mqueue",
@@ -123,7 +123,7 @@ impl Mount for BaseMounts {
             None,
         )?;
         setup_mount(
-            &rootfs,
+            rootfs,
             "cgroup",
             "/sys/fs/cgroup",
             "cgroup2",

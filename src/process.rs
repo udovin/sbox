@@ -9,7 +9,7 @@ use nix::unistd::{chdir, execvpe, fork, sethostname, ForkResult, Gid, Pid, Uid};
 use nix::NixPath;
 
 use crate::{
-    clone3, exit_child, new_pipe, pidfd_open, read_ok, read_pid, read_result,
+    clone3, close_exec_from, exit_child, new_pipe, pidfd_open, read_ok, read_pid, read_result,
     setup_mount_namespace, write_ok, write_pid, write_result, CloneArgs, CloneResult, Container,
     Error, NetworkHandle, OwnedPid,
 };
@@ -110,7 +110,7 @@ impl InitProcessOptions {
                             tx,
                             move || -> Result<(), Error> {
                                 // Setup mount namespace.
-                                setup_mount_namespace(&container)
+                                setup_mount_namespace(container)
                                     .map_err(|v| format!("Cannot setup mount namespace: {v}"))?;
                                 // Setup uts namespace.
                                 sethostname(&container.hostname)
@@ -119,6 +119,8 @@ impl InitProcessOptions {
                                 if let Some(v) = &container.network_manager {
                                     v.set_network()?;
                                 }
+                                // Close file descriptors.
+                                close_exec_from(3)?;
                                 // Setup workdir.
                                 chdir(&work_dir)
                                     .map_err(|v| format!("Cannot change directory: {v}"))?;
@@ -308,6 +310,8 @@ impl ProcessOptions {
                                             .map_err(|v| {
                                                 format!("Cannot enter cgroup namespace: {v}")
                                             })?;
+                                        // Close file descriptors.
+                                        close_exec_from(3)?;
                                         // Setup workdir.
                                         chdir(&work_dir).map_err(|v| {
                                             format!("Cannot change work directory: {v}")

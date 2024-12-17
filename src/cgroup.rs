@@ -98,7 +98,7 @@ impl Cgroup {
             .write_all(pid.to_string().as_bytes())?)
     }
 
-    pub fn get_controllers(&self) -> Result<Vec<String>, Error> {
+    pub fn read_controllers(&self) -> Result<Vec<String>, Error> {
         let content = std::fs::read(self.path.join("cgroup.controllers"))?;
         let mut controllers = Vec::new();
         for line in content.split(|c| *c == b'\n').filter(|v| !v.is_empty()) {
@@ -109,11 +109,27 @@ impl Cgroup {
         Ok(controllers)
     }
 
+    /// Reads current memory usage.
+    pub fn read_memory_current(&self) -> Result<usize, Error> {
+        let content = std::fs::read_to_string(self.path.join("memory.current"))?;
+        Ok(content.trim_end().parse()?)
+    }
+
+    /// Reads peak memory usage.
+    pub fn read_memory_peak(&self) -> Result<usize, Error> {
+        let content = std::fs::read_to_string(self.path.join("memory.peak"))?;
+        Ok(content.trim_end().parse()?)
+    }
+
+    // pub fn write_memory_limit(&self, limit: usize) -> Result<(), Error> {
+    //     todo!()
+    // }
+
     pub fn add_controllers(&self, controllers: Vec<String>) -> Result<(), Error> {
         let mut file = File::options()
             .write(true)
             .open(self.path.join("cgroup.controllers"))?;
-        file.write(
+        file.write_all(
             controllers
                 .into_iter()
                 .fold(String::new(), |acc, v| acc + " +" + &v)
@@ -126,7 +142,7 @@ impl Cgroup {
         let mut file = File::options()
             .write(true)
             .open(self.path.join("cgroup.subtree_control"))?;
-        file.write(
+        file.write_all(
             controllers
                 .into_iter()
                 .fold(String::new(), |acc, v| acc + " +" + &v)

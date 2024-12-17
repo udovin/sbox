@@ -2,8 +2,9 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, RawFd};
 
+use nix::errno::Errno;
+use nix::libc::{c_int, c_uint, close_range, syscall};
 use nix::sys::wait::{waitpid, WaitPidFlag, WaitStatus};
-use nix::{errno::Errno, libc::syscall};
 
 use crate::Error;
 
@@ -89,14 +90,13 @@ pub(crate) unsafe fn clone3(cl_args: &CloneArgs) -> Result<CloneResult, Errno> {
 }
 
 pub(crate) fn pidfd_open(pid: Pid) -> Result<File, Errno> {
-    let res = unsafe {
-        syscall(
-            nix::libc::SYS_pidfd_open,
-            pid.as_raw(),
-            0 as nix::libc::c_uint,
-        )
-    };
+    let res = unsafe { syscall(nix::libc::SYS_pidfd_open, pid.as_raw(), 0 as c_uint) };
     Errno::result(res).map(|v| unsafe { File::from_raw_fd(v as RawFd) })
+}
+
+pub(crate) fn close_exec_from(fd: c_uint) -> Result<(), Errno> {
+    let res = unsafe { close_range(fd, c_uint::MAX, nix::libc::CLOSE_RANGE_CLOEXEC as c_int) };
+    Errno::result(res).map(|_| ())
 }
 
 pub(crate) struct Pipe {
