@@ -2,6 +2,7 @@ use std::fs::{create_dir_all, read, remove_dir, File};
 use std::io::Write as _;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::{Error, Pid};
 
@@ -90,15 +91,64 @@ impl Cgroup {
     }
 
     pub fn add_process(&self, pid: Pid) -> Result<(), Error> {
-        Ok(File::options()
+        File::options()
             .create(false)
             .write(true)
             .truncate(false)
             .open(self.path.join(CGROUP_PROCS))?
-            .write_all(pid.to_string().as_bytes())?)
+            .write_all(pid.to_string().as_bytes())?;
+        Ok(())
     }
 
-    pub fn read_controllers(&self) -> Result<Vec<String>, Error> {
+    /// Reads current memory usage.
+    pub fn memory_current(&self) -> Result<usize, Error> {
+        let content = std::fs::read_to_string(self.path.join("memory.current"))?;
+        Ok(content.trim_end().parse()?)
+    }
+
+    /// Reads peak memory usage.
+    pub fn memory_peak(&self) -> Result<usize, Error> {
+        let content = std::fs::read_to_string(self.path.join("memory.peak"))?;
+        Ok(content.trim_end().parse()?)
+    }
+
+    pub fn set_memory_limit(&self, limit: usize) -> Result<(), Error> {
+        File::options()
+            .create(false)
+            .write(true)
+            .open(self.path.join("memory.max"))?
+            .write_all(format!("{}", limit).as_bytes())?;
+        Ok(())
+    }
+
+    pub fn set_swap_memory_limit(&self, limit: usize) -> Result<(), Error> {
+        File::options()
+            .create(false)
+            .write(true)
+            .open(self.path.join("memory.swap.max"))?
+            .write_all(format!("{}", limit).as_bytes())?;
+        Ok(())
+    }
+
+    pub fn set_cpu_limit(&self, limit: Duration, period: Duration) -> Result<(), Error> {
+        File::options()
+            .create(false)
+            .write(true)
+            .open(self.path.join("cpu.max"))?
+            .write_all(format!("{} {}", limit.as_micros(), period.as_micros()).as_bytes())?;
+        Ok(())
+    }
+
+    pub fn set_pids_limit(&self, limit: usize) -> Result<(), Error> {
+        File::options()
+            .create(false)
+            .write(true)
+            .open(self.path.join("pids.max"))?
+            .write_all(format!("{}", limit).as_bytes())?;
+        Ok(())
+    }
+
+    pub fn controllers(&self) -> Result<Vec<String>, Error> {
         let content = std::fs::read(self.path.join("cgroup.controllers"))?;
         let mut controllers = Vec::new();
         for line in content.split(|c| *c == b'\n').filter(|v| !v.is_empty()) {
@@ -109,45 +159,31 @@ impl Cgroup {
         Ok(controllers)
     }
 
-    /// Reads current memory usage.
-    pub fn read_memory_current(&self) -> Result<usize, Error> {
-        let content = std::fs::read_to_string(self.path.join("memory.current"))?;
-        Ok(content.trim_end().parse()?)
-    }
-
-    /// Reads peak memory usage.
-    pub fn read_memory_peak(&self) -> Result<usize, Error> {
-        let content = std::fs::read_to_string(self.path.join("memory.peak"))?;
-        Ok(content.trim_end().parse()?)
-    }
-
-    // pub fn write_memory_limit(&self, limit: usize) -> Result<(), Error> {
-    //     todo!()
-    // }
-
     pub fn add_controllers(&self, controllers: Vec<String>) -> Result<(), Error> {
-        let mut file = File::options()
+        File::options()
+            .create(false)
             .write(true)
-            .open(self.path.join("cgroup.controllers"))?;
-        file.write_all(
-            controllers
-                .into_iter()
-                .fold(String::new(), |acc, v| acc + " +" + &v)
-                .as_bytes(),
-        )?;
+            .open(self.path.join("cgroup.controllers"))?
+            .write_all(
+                controllers
+                    .into_iter()
+                    .fold(String::new(), |acc, v| acc + " +" + &v)
+                    .as_bytes(),
+            )?;
         Ok(())
     }
 
     pub fn add_subtree_controllers(&self, controllers: Vec<String>) -> Result<(), Error> {
-        let mut file = File::options()
+        File::options()
+            .create(false)
             .write(true)
-            .open(self.path.join("cgroup.subtree_control"))?;
-        file.write_all(
-            controllers
-                .into_iter()
-                .fold(String::new(), |acc, v| acc + " +" + &v)
-                .as_bytes(),
-        )?;
+            .open(self.path.join("cgroup.subtree_control"))?
+            .write_all(
+                controllers
+                    .into_iter()
+                    .fold(String::new(), |acc, v| acc + " +" + &v)
+                    .as_bytes(),
+            )?;
         Ok(())
     }
 

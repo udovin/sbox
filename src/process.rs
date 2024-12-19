@@ -1,11 +1,12 @@
 use std::convert::Infallible;
 use std::ffi::CString;
+use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::panic::catch_unwind;
 use std::path::PathBuf;
 
 use nix::sched::CloneFlags;
 use nix::sys::wait::{waitpid, WaitPidFlag};
-use nix::unistd::{chdir, execvpe, fork, sethostname, ForkResult, Gid, Pid, Uid};
+use nix::unistd::{chdir, dup2, execvpe, fork, sethostname, ForkResult, Gid, Pid, Uid};
 use nix::NixPath;
 
 use crate::{
@@ -17,7 +18,7 @@ use crate::{
 pub type Signal = nix::sys::signal::Signal;
 pub type WaitStatus = nix::sys::wait::WaitStatus;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct InitProcessOptions {
     command: Vec<String>,
     environ: Vec<String>,
@@ -25,6 +26,9 @@ pub struct InitProcessOptions {
     uid: Option<Uid>,
     gid: Option<Gid>,
     cgroup: PathBuf,
+    stdin: Option<OwnedFd>,
+    stdout: Option<OwnedFd>,
+    stderr: Option<OwnedFd>,
 }
 
 impl InitProcessOptions {
@@ -58,6 +62,21 @@ impl InitProcessOptions {
         self
     }
 
+    pub fn stdin(mut self, fd: impl Into<OwnedFd>) -> Self {
+        self.stdin = Some(fd.into());
+        self
+    }
+
+    pub fn stdout(mut self, fd: impl Into<OwnedFd>) -> Self {
+        self.stdout = Some(fd.into());
+        self
+    }
+
+    pub fn stderr(mut self, fd: impl Into<OwnedFd>) -> Self {
+        self.stderr = Some(fd.into());
+        self
+    }
+
     pub fn start(self, container: &Container) -> Result<InitProcess, Error> {
         let uid = self.uid.unwrap_or(Uid::from(0));
         if !container.user_mapper.is_uid_mapped(uid) {
@@ -81,6 +100,9 @@ impl InitProcessOptions {
             cgroup.create()?;
             Some(cgroup)
         };
+        let stdin = self.stdin;
+        let stdout = self.stdout;
+        let stderr = self.stderr;
         let cgroup_file = container.cgroup.open()?;
         let pipe = new_pipe()?;
         let child_pipe = new_pipe()?;
@@ -119,6 +141,15 @@ impl InitProcessOptions {
                                 if let Some(v) = &container.network_manager {
                                     v.set_network()?;
                                 }
+                                if let Some(stdin) = stdin.as_ref() {
+                                    dup2(stdin.as_raw_fd(), RawFd::from(0))?;
+                                }
+                                if let Some(stdout) = stdout.as_ref() {
+                                    dup2(stdout.as_raw_fd(), RawFd::from(1))?;
+                                }
+                                if let Some(stderr) = stderr.as_ref() {
+                                    dup2(stderr.as_raw_fd(), RawFd::from(2))?;
+                                }
                                 // Close file descriptors.
                                 close_exec_from(3)?;
                                 // Setup workdir.
@@ -147,6 +178,9 @@ impl InitProcessOptions {
                 unsafe { nix::libc::_exit(2) }
             }
             CloneResult::Parent { child } => {
+                drop(stdin);
+                drop(stdout);
+                drop(stderr);
                 let child = unsafe { OwnedPid::from_raw(child) };
                 drop(cgroup_file);
                 let rx = child_pipe.rx();
@@ -171,7 +205,10 @@ impl InitProcessOptions {
                 write_ok(tx)?;
                 // Await child process result.
                 read_result(rx)??;
-                Ok(InitProcess::new(child.into_raw(), network_handle))
+                Ok(InitProcess {
+                    pid: child.into_raw(),
+                    _network_handle: network_handle,
+                })
             }
         }
     }
@@ -183,13 +220,6 @@ pub struct InitProcess {
 }
 
 impl InitProcess {
-    fn new(pid: Pid, network_handle: Option<Box<dyn NetworkHandle>>) -> Self {
-        Self {
-            pid,
-            _network_handle: network_handle,
-        }
-    }
-
     pub fn as_pid(&self) -> Pid {
         self.pid
     }
@@ -203,7 +233,7 @@ impl InitProcess {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 pub struct ProcessOptions {
     command: Vec<String>,
     environ: Vec<String>,
@@ -353,7 +383,9 @@ impl ProcessOptions {
                 // Wait for child exit.
                 child.wait_success()?;
                 // Return process.
-                Ok(Process::new(sibling.into_raw()))
+                Ok(Process {
+                    pid: sibling.into_raw(),
+                })
             }
         }
     }
@@ -364,10 +396,6 @@ pub struct Process {
 }
 
 impl Process {
-    fn new(pid: Pid) -> Self {
-        Self { pid }
-    }
-
     pub fn as_pid(&self) -> Pid {
         self.pid
     }

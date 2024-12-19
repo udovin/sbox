@@ -1,6 +1,6 @@
 [package]
 name = "sbox"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Tiny Linux containers implementation"
@@ -9,7 +9,14 @@ keywords = ["sandbox", "linux"]
 categories = ["virtualization"]
 
 [dependencies]
-nix = { version = "0.29.0", features = ["signal", "user", "hostname", "fs", "mount", "sched"] }
+nix = { version = "0.29.0", features = [
+    "signal",
+    "user",
+    "hostname",
+    "fs",
+    "mount",
+    "sched",
+] }
 
 [dev-dependencies]
 rand = "0.8.5"
