@@ -9,14 +9,7 @@ keywords = ["sandbox", "linux"]
 categories = ["virtualization"]
 
 [dependencies]
-nix = { version = "0.29.0", features = [
-    "signal",
-    "user",
-    "hostname",
-    "fs",
-    "mount",
-    "sched",
-] }
+nix = { version = "0.29.0", features = ["signal", "user", "hostname", "fs", "mount", "sched"] }
 
 [dev-dependencies]
 rand = "0.8.5"
