@@ -159,18 +159,15 @@ impl Cgroup {
         Ok(controllers)
     }
 
-    pub fn add_controllers(&self, controllers: Vec<String>) -> Result<(), Error> {
-        File::options()
-            .create(false)
-            .write(true)
-            .open(self.path.join("cgroup.controllers"))?
-            .write_all(
-                controllers
-                    .into_iter()
-                    .fold(String::new(), |acc, v| acc + " +" + &v)
-                    .as_bytes(),
-            )?;
-        Ok(())
+    pub fn subtree_controllers(&self) -> Result<Vec<String>, Error> {
+        let content = std::fs::read(self.path.join("cgroup.subtree_control"))?;
+        let mut controllers = Vec::new();
+        for line in content.split(|c| *c == b'\n').filter(|v| !v.is_empty()) {
+            std::str::from_utf8(line)?
+                .split(' ')
+                .for_each(|v| controllers.push(v.to_owned()));
+        }
+        Ok(controllers)
     }
 
     pub fn add_subtree_controllers(&self, controllers: Vec<String>) -> Result<(), Error> {

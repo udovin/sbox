@@ -21,6 +21,7 @@ jobs:
         sudo mkdir -p $TEST_CGROUP_PATH/test.scope
         sudo chown -R $(id -u):$(id -g) $TEST_CGROUP_PATH
         sudo usermod --add-subuids 100000-165536 --add-subgids 100000-165536 $(id -un)
+        sudo echo -n '+memory +pids +cpu' >$TEST_CGROUP_PATH/cgroup.subtree_control
       env:
         TEST_CGROUP_PATH: /sys/fs/cgroup/sbox.slice
     - name: Run test coverage
@@ -32,7 +33,7 @@ jobs:
         TEST_CGROUP_PATH: /sys/fs/cgroup/sbox.slice
     - name: Cleanup Cgroup
       run: |
-        sudo rmdir $TEST_CGROUP_PATH/test.scope $TEST_CGROUP_PATH
+        sudo rmdir $(ls -d $TEST_CGROUP_PATH/*/) $TEST_CGROUP_PATH
       env:
         TEST_CGROUP_PATH: /sys/fs/cgroup/sbox.slice
     - name: Upload results to Codecov
