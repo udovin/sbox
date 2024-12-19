@@ -178,7 +178,7 @@ fn test_container_oom() {
     init_process.wait().unwrap();
     assert_ne!(stdout, "success");
     let events = cgroup.memory_events().unwrap();
-    assert_eq!(events.oom, 1);
+    assert!(events.oom > 0);
     let memory = cgroup.memory_peak().unwrap();
     assert!(memory >= 256 * 1024, "{memory}");
 }

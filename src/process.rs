@@ -1,9 +1,10 @@
 use std::convert::Infallible;
 use std::ffi::CString;
-use std::os::fd::{AsRawFd, OwnedFd, RawFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::panic::catch_unwind;
 use std::path::PathBuf;
 
+use nix::fcntl::OFlag;
 use nix::sched::CloneFlags;
 use nix::sys::wait::{waitpid, WaitPidFlag};
 use nix::unistd::{chdir, dup2, execvpe, fork, sethostname, ForkResult, Gid, Pid, Uid};
@@ -103,6 +104,13 @@ impl InitProcessOptions {
         let stdin = self.stdin;
         let stdout = self.stdout;
         let stderr = self.stderr;
+        let dev_null = if stdin.is_none() || stdout.is_none() || stderr.is_none() {
+            let raw_fd =
+                nix::fcntl::open("/dev/null", OFlag::O_RDWR, nix::sys::stat::Mode::empty())?;
+            Some(unsafe { OwnedFd::from_raw_fd(raw_fd) })
+        } else {
+            None
+        };
         let cgroup_file = container.cgroup.open()?;
         let pipe = new_pipe()?;
         let child_pipe = new_pipe()?;
@@ -141,15 +149,19 @@ impl InitProcessOptions {
                                 if let Some(v) = &container.network_manager {
                                     v.set_network()?;
                                 }
-                                if let Some(stdin) = stdin.as_ref() {
-                                    dup2(stdin.as_raw_fd(), RawFd::from(0))?;
-                                }
-                                if let Some(stdout) = stdout.as_ref() {
-                                    dup2(stdout.as_raw_fd(), RawFd::from(1))?;
-                                }
-                                if let Some(stderr) = stderr.as_ref() {
-                                    dup2(stderr.as_raw_fd(), RawFd::from(2))?;
-                                }
+                                // Setup stdio.
+                                dup2(
+                                    stdin.as_ref().or(dev_null.as_ref()).unwrap().as_raw_fd(),
+                                    RawFd::from(0),
+                                )?;
+                                dup2(
+                                    stdout.as_ref().or(dev_null.as_ref()).unwrap().as_raw_fd(),
+                                    RawFd::from(1),
+                                )?;
+                                dup2(
+                                    stderr.as_ref().or(dev_null.as_ref()).unwrap().as_raw_fd(),
+                                    RawFd::from(2),
+                                )?;
                                 // Close file descriptors.
                                 close_exec_from(3)?;
                                 // Setup workdir.
@@ -178,11 +190,15 @@ impl InitProcessOptions {
                 unsafe { nix::libc::_exit(2) }
             }
             CloneResult::Parent { child } => {
+                let child = unsafe { OwnedPid::from_raw(child) };
+                // Close cgroup file descriptor.
+                drop(cgroup_file);
+                // Close stdio descriptors.
                 drop(stdin);
                 drop(stdout);
                 drop(stderr);
-                let child = unsafe { OwnedPid::from_raw(child) };
-                drop(cgroup_file);
+                drop(dev_null);
+                // Setup pipes.
                 let rx = child_pipe.rx();
                 let tx = pipe.tx();
                 // Map user.
@@ -241,6 +257,9 @@ pub struct ProcessOptions {
     uid: Option<Uid>,
     gid: Option<Gid>,
     cgroup: PathBuf,
+    stdin: Option<OwnedFd>,
+    stdout: Option<OwnedFd>,
+    stderr: Option<OwnedFd>,
 }
 
 impl ProcessOptions {
@@ -274,6 +293,21 @@ impl ProcessOptions {
         self
     }
 
+    pub fn stdin(mut self, fd: impl Into<OwnedFd>) -> Self {
+        self.stdin = Some(fd.into());
+        self
+    }
+
+    pub fn stdout(mut self, fd: impl Into<OwnedFd>) -> Self {
+        self.stdout = Some(fd.into());
+        self
+    }
+
+    pub fn stderr(mut self, fd: impl Into<OwnedFd>) -> Self {
+        self.stderr = Some(fd.into());
+        self
+    }
+
     pub fn start(
         self,
         container: &Container,
@@ -301,6 +335,16 @@ impl ProcessOptions {
         };
         let command = self.command;
         let environ = self.environ;
+        let stdin = self.stdin;
+        let stdout = self.stdout;
+        let stderr = self.stderr;
+        let dev_null = if stdin.is_none() || stdout.is_none() || stderr.is_none() {
+            let raw_fd =
+                nix::fcntl::open("/dev/null", OFlag::O_RDWR, nix::sys::stat::Mode::empty())?;
+            Some(unsafe { OwnedFd::from_raw_fd(raw_fd) })
+        } else {
+            None
+        };
         let pid_pipe = new_pipe()?;
         match unsafe { fork() }? {
             ForkResult::Child => {
@@ -340,6 +384,31 @@ impl ProcessOptions {
                                             .map_err(|v| {
                                                 format!("Cannot enter cgroup namespace: {v}")
                                             })?;
+                                        // Setup stdio.
+                                        dup2(
+                                            stdin
+                                                .as_ref()
+                                                .or(dev_null.as_ref())
+                                                .unwrap()
+                                                .as_raw_fd(),
+                                            RawFd::from(0),
+                                        )?;
+                                        dup2(
+                                            stdout
+                                                .as_ref()
+                                                .or(dev_null.as_ref())
+                                                .unwrap()
+                                                .as_raw_fd(),
+                                            RawFd::from(1),
+                                        )?;
+                                        dup2(
+                                            stderr
+                                                .as_ref()
+                                                .or(dev_null.as_ref())
+                                                .unwrap()
+                                                .as_raw_fd(),
+                                            RawFd::from(2),
+                                        )?;
                                         // Close file descriptors.
                                         close_exec_from(3)?;
                                         // Setup workdir.
@@ -365,6 +434,11 @@ impl ProcessOptions {
                         }
                         CloneResult::Parent { child } => {
                             exit_child(move || -> Result<(), Error> {
+                                // Close stdio descriptors.
+                                drop(stdin);
+                                drop(stdout);
+                                drop(stderr);
+                                drop(dev_null);
                                 // Send child pid to parent process.
                                 write_pid(pid_tx, child)?;
                                 // Await child process is started.
@@ -377,6 +451,12 @@ impl ProcessOptions {
             }
             ForkResult::Parent { child } => {
                 let child = unsafe { OwnedPid::from_raw(child) };
+                // Close stdio descriptors.
+                drop(stdin);
+                drop(stdout);
+                drop(stderr);
+                drop(dev_null);
+                // Setup pipes.
                 let rx = pid_pipe.rx();
                 // Read subchild pid.
                 let sibling = unsafe { OwnedPid::from_raw(read_pid(rx)?) };

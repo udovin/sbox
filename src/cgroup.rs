@@ -133,12 +133,21 @@ impl Cgroup {
         Ok(events)
     }
 
-    pub fn set_memory_limit(&self, limit: usize) -> Result<(), Error> {
+    pub fn set_memory_limit(&self, bytes: usize) -> Result<(), Error> {
         File::options()
             .create(false)
             .write(true)
             .open(self.path.join("memory.max"))?
-            .write_all(format!("{}", limit).as_bytes())?;
+            .write_all(format!("{}", bytes).as_bytes())?;
+        Ok(())
+    }
+
+    pub fn set_memory_guarantee(&self, bytes: usize) -> Result<(), Error> {
+        File::options()
+            .create(false)
+            .write(true)
+            .open(self.path.join("memory.min"))?
+            .write_all(format!("{}", bytes).as_bytes())?;
         Ok(())
     }
 
@@ -149,6 +158,24 @@ impl Cgroup {
             .open(self.path.join("memory.swap.max"))?
             .write_all(format!("{}", limit).as_bytes())?;
         Ok(())
+    }
+
+    pub fn cpu_usage(&self) -> Result<CgroupCpuUsage, Error> {
+        let content = std::fs::read(self.path.join("cpu.stat"))?;
+        let mut usage = CgroupCpuUsage::default();
+        for line in content.split(|c| *c == b'\n').filter(|v| !v.is_empty()) {
+            let (key, value) = match std::str::from_utf8(line)?.split_once(' ') {
+                Some(v) => v,
+                None => continue,
+            };
+            match key {
+                "usage_usec" => usage.total = Duration::from_micros(value.trim_end().parse()?),
+                "user_usec" => usage.user = Duration::from_micros(value.trim_end().parse()?),
+                "system_usec" => usage.system = Duration::from_micros(value.trim_end().parse()?),
+                _ => continue,
+            }
+        }
+        Ok(usage)
     }
 
     pub fn set_cpu_limit(&self, limit: Duration, period: Duration) -> Result<(), Error> {
@@ -221,4 +248,11 @@ pub struct CgroupMemoryEvents {
     pub oom: usize,
     pub oom_kill: usize,
     pub oom_group_kill: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CgroupCpuUsage {
+    pub total: Duration,
+    pub user: Duration,
+    pub system: Duration,
 }
