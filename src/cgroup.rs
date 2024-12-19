@@ -112,6 +112,27 @@ impl Cgroup {
         Ok(content.trim_end().parse()?)
     }
 
+    pub fn memory_events(&self) -> Result<CgroupMemoryEvents, Error> {
+        let content = std::fs::read(self.path.join("memory.events"))?;
+        let mut events = CgroupMemoryEvents::default();
+        for line in content.split(|c| *c == b'\n').filter(|v| !v.is_empty()) {
+            let (key, value) = match std::str::from_utf8(line)?.split_once(' ') {
+                Some(v) => v,
+                None => continue,
+            };
+            match key {
+                "low" => events.low = value.trim_end().parse()?,
+                "high" => events.high = value.trim_end().parse()?,
+                "max" => events.max = value.trim_end().parse()?,
+                "oom" => events.oom = value.trim_end().parse()?,
+                "oom_kill" => events.oom_kill = value.trim_end().parse()?,
+                "oom_group_kill" => events.oom_group_kill = value.trim_end().parse()?,
+                _ => continue,
+            }
+        }
+        Ok(events)
+    }
+
     pub fn set_memory_limit(&self, limit: usize) -> Result<(), Error> {
         File::options()
             .create(false)
@@ -190,4 +211,14 @@ impl Cgroup {
             .custom_flags(nix::libc::O_PATH | nix::libc::O_DIRECTORY)
             .open(&self.path)?)
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CgroupMemoryEvents {
+    pub low: usize,
+    pub high: usize,
+    pub max: usize,
+    pub oom: usize,
+    pub oom_kill: usize,
+    pub oom_group_kill: usize,
 }
