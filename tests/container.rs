@@ -1,8 +1,7 @@
 use std::fs::{create_dir, remove_dir_all, File};
 use std::io::Read;
-use std::ops::Deref;
 
-use common::{get_cgroup, get_rootfs, rand_string, TempCgroup, TempDir};
+use common::{get_rootfs, TempCgroup, TempDir};
 use sbox::{
     run_as_root, BaseMounts, BinNewIdMapper, Container, Gid, InitProcess, OverlayMount, Process,
     Slirp4NetnsManager, Uid,
